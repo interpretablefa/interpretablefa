@@ -1,6 +1,6 @@
 # The `interpretablefa` package
 ## Authors
-* [Justin Philip Tuazon](https://www.linkedin.com/feed/)
+* [Justin Philip Tuazon](https://github.com/jptuazon)
 * [Gia Mizrane Abubo](https://www.linkedin.com/in/gia-mizrane-abubo/)
 
 ## Overview
