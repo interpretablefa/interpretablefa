@@ -1,4 +1,8 @@
 # The `interpretablefa` package
+## Authors
+* [Justin Philip Tuazon](https://www.linkedin.com/feed/)
+* [Gia Mizrane Abubo](https://www.linkedin.com/in/gia-mizrane-abubo/)
+
 ## Overview
 This is a package for performing interpretable factor analysis. This implements the several indices, as well as the priorimax and interpmax rotations and procedures, that are described [here](https://arxiv.org/abs/2409.11525).
 
