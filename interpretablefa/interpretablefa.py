@@ -40,26 +40,32 @@ class InterpretableFA:
     Parameters
     ----------
     data_: :obj: `pandas.core.frame.DataFrame`
-        The data to be used for fitting factor models.
+        The data to be used for fitting factor models. Can be either the raw data or the correlation matrix.
+    is_corr_matrix: bool, optional
+        `True` if the data supplied is a correlation matrix and `False` otherwise. Defaults to `True`. Note that if
+        the correlation matrix is supplied, the KMO values, sphericity test result, and estimated factor scores are not
+        provided.
     prior: :obj: `numpy.ndarray` or `None`
         If `prior` is `None`, then the prior is generated using pairwise semantic similarities from the Universal
         Sentence Encoder. If `prior` is of class `numpy.ndarray`, it must be a 2D array (i.e., its shape must be an
         ordered pair).
-    questions: list of str
+    questions: list of str, optional
         The questions associated with each variable. It is assumed that the order of the questions correspond to the
         order of the columns in `data_`. For example, the first element in `questions` correspond to the first column
-        of `data_`.
+        of `data_`. If `prior` is not `None`, this is ignored.
 
     Attributes
     ----------
     data_: :obj: `pandas.core.frame.DataFrame`
         The data used for fitting factor models.
+    is_corr_matrix: bool
+        `True` if the data is a correlation matrix and `False` otherwise.
     prior: :obj: `numpy.ndarray` or `None`
         The prior used for calculating interpretability indices and for performing priorimax/interpmax rotations.
     models: dict
         The dictionary containing the saved or fitted models, where the keys are the model names and the values are
         the models. Note that a model must be stored in this dictionary in order to analyze them further.
-    questions: list of str or `None`
+    questions: list of str
         The list of questions used for calculating semantic similarities.
     embeddings: list or `None`
         The embeddings of the questions, used for calculating semantic similarities.
@@ -71,7 +77,7 @@ class InterpretableFA:
     use_url = "https://tfhub.dev/google/universal-sentence-encoder/4"
     use_model = None
 
-    def __init__(self, data_, prior, questions):
+    def __init__(self, data_, prior, questions, is_corr_matrix=False):
         """
         Initializes the InterpretableFA object. Note that the first time `InterpretableFA.__init__` is called with
         `prior` set to `None`, the class method `InterpretableFA.load_use_model` is run to load the Universal
@@ -81,10 +87,32 @@ class InterpretableFA:
 
         if not isinstance(data_, pd.DataFrame):
             raise TypeError("data must be a pandas dataframe")
+        if not isinstance(is_corr_matrix, bool):
+            raise TypeError("is_corr_matrix must be Boolean")
         self.data_ = data_
+        self.is_corr_matrix = is_corr_matrix
         self.models = {}
         self.orthogonal = {}
         self.embeddings = None
+        self._scaler = 1
+        if self.is_corr_matrix:
+            if self.data_.shape[0] != self.data_.shape[1]:
+                raise ValueError("the data correlation matrix must be a square matrix")
+            for row in range(self.data_.shape[0]):
+                for col in range(row + 1):
+                    val = self.data_[row, col]
+                    try:
+                        float(val)
+                    except ValueError:
+                        raise TypeError("entries in the data correlation matrix must be float or coercible to float")
+                    if val != self.data_[col, row]:
+                        raise ValueError("the data correlation matrix must be symmetric")
+                    if abs(val) > 1:
+                        raise ValueError("entries in the data correlation matrix must be between -1 and 1, inclusive")
+                    if row == col and val != 1:
+                        raise ValueError("the diagonal entries of the data correlation matrix must be 1")
+            if not np.all(np.linalg.eigvals(self.data_) >= 0):
+                raise ValueError("the correlation matrix must be positive semi-definite")
         if prior is None:
             if not (bool(questions) and isinstance(questions, list) and
                     all(isinstance(question, str) for question in questions)):
@@ -96,16 +124,16 @@ class InterpretableFA:
                 InterpretableFA.load_use_model()
             self.prior = self._calculate_semantic_similarity()
         elif isinstance(prior, np.ndarray):
-            self.questions = None
+            self.questions = []
             if len(prior.shape) != 2:
                 raise ValueError("the shape of prior must be 2")
-            if not np.array_equal(prior, np.transpose(prior)):
-                raise ValueError("prior must be a symmetric matrix (2D numpy array)")
             if prior.shape[0] != data_.shape[1]:
                 raise ValueError("the number of rows and of columns in prior must match the number of columns in data")
             for row in range(prior.shape[0]):
-                for col in range(row, prior.shape[0]):
+                for col in range(row + 1):
                     val = prior[row, col]
+                    if val != prior[col, row]:
+                        raise ValueError("prior must be a symmetric matrix (2D numpy array)")
                     if val is None:
                         continue
                     try:
@@ -147,8 +175,7 @@ class InterpretableFA:
         items = [item for group in groupings for item in group]
         if not all(isinstance(item, int) for item in items):
             raise TypeError("all elements of each sublist in groupings must be an integer")
-        items.sort()
-        if items != sorted(list(set(items))):
+        if len(items) != len(set(items)):
             raise ValueError("the elements of groupings must be mutually exclusive")
         if not set(items) <= set(range(1, size + 1)):
             raise ValueError("groupings must partition [1, 2, ..., `size`] (or a subset of it)")
@@ -175,7 +202,7 @@ class InterpretableFA:
     def _calculate_semantic_similarity(self):
         # This gets the semantic similarity matrix.
 
-        if self.embeddings is None and self.questions is not None:
+        if self.embeddings is None and len(self.questions) > 0:
             self.embeddings = InterpretableFA.use_model(self.questions)
         dots = np.inner(self.embeddings, self.embeddings)
         for i in product(range(dots.shape[0]), range(dots.shape[0])):
@@ -203,10 +230,10 @@ class InterpretableFA:
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
         model = self.models[model_name]
         if self.orthogonal[model_name]:
-            variable_factor_correlations = model.loadings_ / np.std(self.data_.values, axis=0, ddof=1)[:, None]
+            variable_factor_correlations = model.loadings_
         else:
-            variable_factor_correlations = (np.matmul(model.loadings_, model.phi_) /
-                                            np.std(self.data_.values, axis=0, ddof=1)[:, None])
+            variable_factor_correlations = np.matmul(model.loadings_, model.phi_)
+        variable_factor_correlations = variable_factor_correlations / self._scaler
         return variable_factor_correlations
 
     def calculate_correlation_ranking_similarity(self, model_name):
@@ -231,7 +258,7 @@ class InterpretableFA:
         num_of_vars = self.data_.shape[1]
         correlation_ranking_similarity = np.ones(shape=(num_of_vars, num_of_vars))
         for i in range(num_of_vars):
-            for j in range(i + 1, num_of_vars):
+            for j in range(i):
                 correlations_1 = list(correlations.loc[i, :])
                 correlations_2 = list(correlations.loc[j, :])
                 val = (1 / 2) * (kendalltau(correlations_1, correlations_2, variant="b").statistic + 1)
@@ -262,7 +289,7 @@ class InterpretableFA:
         correlation_ranking_similarity = self.calculate_correlation_ranking_similarity(model_name)
         prior = self.prior
         for i in range(num_of_vars):
-            for j in range(i + 1, num_of_vars):
+            for j in range(i):
                 if prior[i, j] is not None:
                     multiset.append((prior[i, j], correlation_ranking_similarity[i, j]))
         return multiset
@@ -352,7 +379,7 @@ class InterpretableFA:
         central_meanings = self.calculate_central_meanings(model_name)
         sum_ = 0
         for i in range(len(central_meanings)):
-            for j in range(i + 1, len(central_meanings)):
+            for j in range(i):
                 numerator = np.inner(central_meanings[i], central_meanings[j])
                 magnitude_i = np.sqrt(central_meanings[i].dot(central_meanings[i]))
                 magnitude_j = np.sqrt(central_meanings[j].dot(central_meanings[j]))
@@ -424,8 +451,8 @@ class InterpretableFA:
         h = self.calculate_horizontal_index(model_name) if procedure == "interpmax" else None
         i = None if h is None else 1 - (math.sqrt(2) / 2) * math.sqrt((v - 1) ** 2 + (h - 1) ** 2)
         communalities = self.models[model_name].get_communalities().tolist()
-        sphericity = calculate_bartlett_sphericity(self.data_)
-        kmo = calculate_kmo(self.data_)
+        sphericity = calculate_bartlett_sphericity(self.data_) if not self.is_corr_matrix else None
+        kmo = calculate_kmo(self.data_) if not self.is_corr_matrix else None
         result = {
             "model": model_name,
             "agreement": v,
@@ -433,13 +460,14 @@ class InterpretableFA:
             "overall": i,
             "communalities": communalities,
             "sphericity": sphericity,
-            "kmo": kmo
+            "kmo": kmo,
+            "sufficiency": None
         }
-        try:
-            result["sufficiency"] = self.models[model_name].sufficiency(self.data_.shape[0])
-        except Exception as ex:
-            print(ex)
-            result["sufficiency"] = None
+        if not self.is_corr_matrix:
+            try:
+                result["sufficiency"] = self.models[model_name].sufficiency(self.data_.shape[0])
+            except Exception as ex:
+                print(ex)
         return result
 
     @staticmethod
@@ -450,7 +478,7 @@ class InterpretableFA:
         skew_symmetric_matrix = np.zeros(shape=(num_of_factors, num_of_factors))
         ind = 0
         for i in range(num_of_factors):
-            for j in range(i + 1, num_of_factors):
+            for j in range(i):
                 skew_symmetric_matrix[i, j] = x[ind]
                 skew_symmetric_matrix[j, i] = -x[ind]
                 ind += 1
@@ -481,7 +509,7 @@ class InterpretableFA:
         num_of_vars = self.data_.shape[1]
         embeddings = self.embeddings
         num_of_factors = loadings.shape[1]
-        variable_factor_correlations = loadings / np.std(self.data_.values, axis=0, ddof=1)[:, None]
+        variable_factor_correlations = loadings / self._scaler
         central_meanings = []
         for i in range(num_of_factors):
             corrs = np.absolute(np.array(variable_factor_correlations[:, i]))
@@ -492,7 +520,7 @@ class InterpretableFA:
             central_meanings.append((numerator / denominator).numpy())
         sum_ = 0
         for i in range(len(central_meanings)):
-            for j in range(i + 1, len(central_meanings)):
+            for j in range(i):
                 numerator = np.inner(central_meanings[i], central_meanings[j])
                 magnitude_i = np.sqrt(central_meanings[i].dot(central_meanings[i]))
                 magnitude_j = np.sqrt(central_meanings[j].dot(central_meanings[j]))
@@ -509,13 +537,13 @@ class InterpretableFA:
         else:
             loadings = model.loadings_
         num_of_vars = self.data_.shape[1]
-        variable_factor_correlations = loadings / np.std(self.data_.values, axis=0, ddof=1)[:, None]
+        variable_factor_correlations = loadings / self._scaler
         variable_factor_correlations = pd.DataFrame(variable_factor_correlations).abs()
         prior = self.prior
         a = []
         b = []
         for i in range(num_of_vars):
-            for j in range(i + 1, num_of_vars):
+            for j in range(i):
                 if prior[i, j] is not None:
                     a.append(prior[i, j])
                     correlations_1 = list(variable_factor_correlations.loc[i, :])
@@ -551,7 +579,7 @@ class InterpretableFA:
         indices = []
         rot_names = []
         for rot in np.setdiff1d(ORTHOGONAL_ROTATIONS, ["priorimax", "interpmax"]):
-            temp_model = FactorAnalyzer(num_factors, rot)
+            temp_model = FactorAnalyzer(n_factors=num_factors, rotation=rot, is_corr_matrix=self.is_corr_matrix)
             temp_model.fit(self.data_)
             models.append(temp_model)
             rot_names.append(rot)
@@ -693,7 +721,7 @@ class InterpretableFA:
             rotation = None
         else:
             special_rotation = None
-        fa = FactorAnalyzer(n_factors, rotation, method, use_smc, False, bounds,
+        fa = FactorAnalyzer(n_factors, rotation, method, use_smc, self.is_corr_matrix, bounds,
                             impute, svd_method, rotation_kwargs)
         fa.fit(self.data_)
         self.models[model_name] = fa
@@ -732,7 +760,7 @@ class InterpretableFA:
         summary = self.calculate_indices(model_name, procedure)
         variable_factor = self.calculate_variable_factor_correlations(model_name)
         loadings = self.models[model_name].loadings_
-        scores = self.models[model_name].transform(self.data_)
+        scores = self.models[model_name].transform(self.data_) if not self.is_corr_matrix else None
         summary["variable_factor_correlations"] = variable_factor
         if loadings_and_scores is True:
             summary["loadings"] = loadings
@@ -768,7 +796,8 @@ class InterpretableFA:
         for i in range(corr_mat.shape[1]):
             analysis["factor_" + str(i + 1)] = corr_mat[:, i].tolist()
         analysis["communality"] = model.get_communalities().tolist()
-        analysis["kmo_msa"] = calculate_kmo(self.data_)[0].tolist()
+        analysis["kmo_msa"] = calculate_kmo(self.data_)[0].tolist() if not self.is_corr_matrix else \
+            [None] * self.data_.shape[0]
         analysis = pd.DataFrame(analysis)
         if sorted_:
             temp = analysis.drop(["variable", "communality", "kmo_msa"], axis=1)
@@ -1017,7 +1046,6 @@ class InterpretableFA:
             Default is `None`.
         """
 
-
         if radii is None:
             radii = [0.25, 0.5, 0.75, 1.00]
 
@@ -1133,4 +1161,3 @@ class InterpretableFA:
 
         if plot_type in ['overall', 'all']:
             self.overall_plot(model_names, title=title_overall, radii=radii, labels=labels)
-
