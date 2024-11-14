@@ -10,6 +10,8 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
+# interpretablefa v1.1.0
+
 import math
 import numpy as np
 import pandas as pd
@@ -100,13 +102,15 @@ class InterpretableFA:
                 raise ValueError("the data correlation matrix must be a square matrix")
             for row in range(self.data_.shape[0]):
                 for col in range(row + 1):
-                    val = self.data_[row, col]
+                    val = self.data_.iloc[row, col]
                     try:
                         float(val)
                     except ValueError:
                         raise TypeError("entries in the data correlation matrix must be float or coercible to float")
-                    if val != self.data_[col, row]:
+                    if not np.isclose(val, self.data_.iloc[col, row]):
                         raise ValueError("the data correlation matrix must be symmetric")
+                    else:
+                        self.data_.iloc[col, row] = val
                     if abs(val) > 1:
                         raise ValueError("entries in the data correlation matrix must be between -1 and 1, inclusive")
                     if row == col and val != 1:
@@ -132,10 +136,16 @@ class InterpretableFA:
             for row in range(prior.shape[0]):
                 for col in range(row + 1):
                     val = prior[row, col]
-                    if val != prior[col, row]:
-                        raise ValueError("prior must be a symmetric matrix (2D numpy array)")
                     if val is None:
-                        continue
+                        if prior[col, row] is None:
+                            continue
+                        else:
+                            raise ValueError("prior must be a symmetric matrix (2D numpy array)")
+                    else:
+                        if not np.isclose(val, prior[col, row]):
+                            raise ValueError("prior must be a symmetric matrix (2D numpy array)")
+                        else:
+                            prior[col, row] = val
                     try:
                         float(val)
                     except ValueError:
@@ -236,7 +246,7 @@ class InterpretableFA:
         variable_factor_correlations = variable_factor_correlations / self._scaler
         return variable_factor_correlations
 
-    def calculate_correlation_ranking_similarity(self, model_name):
+    def calculate_loading_similarity(self, model_name):
         """
         This calculates the correlation ranking similarities for each pair of components or variables for the
         specified model.
@@ -248,23 +258,23 @@ class InterpretableFA:
 
         Returns
         ----------
-        correlation_ranking_similarity: :obj: `numpy.ndarray`
-            The correlation ranking similarity matrix
+        loading_similarity: :obj: `numpy.ndarray`
+            The loading similarity matrix
         """
 
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
-        correlations = pd.DataFrame(self.calculate_variable_factor_correlations(model_name)).abs()
-        num_of_vars = self.data_.shape[1]
-        correlation_ranking_similarity = np.ones(shape=(num_of_vars, num_of_vars))
+        correlations = self.calculate_variable_factor_correlations(model_name)
+        num_of_vars = correlations.shape[0]
+        loading_similarity = np.ones(shape=(num_of_vars, num_of_vars))
         for i in range(num_of_vars):
             for j in range(i):
-                correlations_1 = list(correlations.loc[i, :])
-                correlations_2 = list(correlations.loc[j, :])
-                val = (1 / 2) * (kendalltau(correlations_1, correlations_2, variant="b").statistic + 1)
-                correlation_ranking_similarity[i, j] = val
-                correlation_ranking_similarity[j, i] = val
-        return correlation_ranking_similarity
+                x_1 = correlations[i, :]
+                x_2 = correlations[j, :]
+                val = 1 - math.sqrt((1 / 2) * np.sum(((x_1 ** 2) - (x_2 ** 2)) ** 2))
+                loading_similarity[i, j] = val
+                loading_similarity[j, i] = val
+        return loading_similarity
 
     def generate_multiset(self, model_name):
         """
@@ -286,12 +296,12 @@ class InterpretableFA:
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
         num_of_vars = self.data_.shape[1]
         multiset = []
-        correlation_ranking_similarity = self.calculate_correlation_ranking_similarity(model_name)
+        loading_similarity = self.calculate_loading_similarity(model_name)
         prior = self.prior
         for i in range(num_of_vars):
             for j in range(i):
                 if prior[i, j] is not None:
-                    multiset.append((prior[i, j], correlation_ranking_similarity[i, j]))
+                    multiset.append((prior[i, j], loading_similarity[i, j]))
         return multiset
 
     def calculate_agreement_index(self, model_name):
@@ -314,10 +324,17 @@ class InterpretableFA:
         multiset = self.generate_multiset(model_name)
         x = []
         y = []
-        for i in range(len(multiset)):
+        n = len(multiset)
+        for i in range(n):
             x.append(multiset[i][0])
             y.append(multiset[i][1])
-        agreement_index = (1 / 2) * (kendalltau(x, y, variant="b").statistic + 1)
+        tau = (1 / 2) * (kendalltau(x, y, variant="b").statistic + 1)
+        x = np.array(x)
+        y = np.array(y)
+        theta = n * np.sum(x * y) - np.sum(x) * np.sum(y)
+        theta = theta / (n * np.sum(x ** 2) - (np.sum(x)) ** 2)
+        theta = (1 / math.pi) * np.arctan(theta) + 1 / 2
+        agreement_index = tau * theta
         return agreement_index
 
     def calculate_vertical_index(self, model_name):
@@ -536,9 +553,8 @@ class InterpretableFA:
             loadings = self._get_rotated_loadings(x, unrotated_loadings)
         else:
             loadings = model.loadings_
-        num_of_vars = self.data_.shape[1]
-        variable_factor_correlations = loadings / self._scaler
-        variable_factor_correlations = pd.DataFrame(variable_factor_correlations).abs()
+        num_of_vars = loadings.shape[0]
+        correlations = loadings / self._scaler
         prior = self.prior
         a = []
         b = []
@@ -546,11 +562,18 @@ class InterpretableFA:
             for j in range(i):
                 if prior[i, j] is not None:
                     a.append(prior[i, j])
-                    correlations_1 = list(variable_factor_correlations.loc[i, :])
-                    correlations_2 = list(variable_factor_correlations.loc[j, :])
-                    b.append((1 / 2) * (kendalltau(correlations_1, correlations_2, variant="b").statistic + 1))
-        h = (1 / 2) * (kendalltau(a, b, variant="b").statistic + 1)
-        return h
+                    x_1 = correlations[i, :]
+                    x_2 = correlations[j, :]
+                    b.append(1 - math.sqrt((1 / 2) * np.sum(((x_1 ** 2) - (x_2 ** 2)) ** 2)))
+        n = len(a)
+        tau = (1 / 2) * (kendalltau(a, b, variant="b").statistic + 1)
+        a = np.array(a)
+        b = np.array(b)
+        theta = n * np.sum(a * b) - np.sum(a) * np.sum(b)
+        theta = theta / (n * np.sum(a ** 2) - (np.sum(a)) ** 2)
+        theta = (1 / math.pi) * np.arctan(theta) + 1 / 2
+        v = tau * theta
+        return v
 
     def _get_overall(self, x, grad, unrotated_loadings, model=None):
         # This gets the overall interpretability index
@@ -720,12 +743,12 @@ class InterpretableFA:
             special_rotation = rotation
             rotation = None
         else:
-            special_rotation = None
+            special_rotation = "none"
         fa = FactorAnalyzer(n_factors, rotation, method, use_smc, self.is_corr_matrix, bounds,
                             impute, svd_method, rotation_kwargs)
         fa.fit(self.data_)
         self.models[model_name] = fa
-        if special_rotation is not None:
+        if special_rotation != "none":
             self._rotate_factors(model_name, special_rotation, max_time, opt_seed)
         model = self.models[model_name]
         return model
@@ -813,7 +836,7 @@ class InterpretableFA:
         model_name: str
             The model to be removed.
 
-        Return
+        Returns
         ----------
         None
         """
@@ -909,8 +932,8 @@ class InterpretableFA:
         title: str, optional
             The title of the heatmap plot. If `None`, a default title will be used.
         cmap: str or :obj:`matplotlib.colors.Colormap`, optional
-            The colormap to use for the heatmap. Can be a string for predefined colormaps or a obj:`matplotlib.colors.Colormap`.
-            If `None`, a default colormap will be used.
+            The colormap to use for the heatmap. Can be a string for predefined colormaps or an
+            obj:`matplotlib.colors.Colormap`. If `None`, a default colormap will be used.
         """
 
         if model_name not in self.models.keys():
@@ -1042,8 +1065,8 @@ class InterpretableFA:
         radii : list of float, optional
             Radii of isoquant curves. Defaults to [0.25, 0.5, 0.75, 1.00].
         labels : dict of str, list of str, optional
-            Labels for specific points in each model. The keys are model names, and the values are lists of labels for each point.
-            Default is `None`.
+            Labels for specific points in each model. The keys are model names, and the values are lists of labels for
+            each point. Default is `None`.
         """
 
         if radii is None:
@@ -1065,14 +1088,14 @@ class InterpretableFA:
             plt.plot(x_vals, y_vals, linestyle='dashed', color='black')
 
             if radius < 1:
-                y_annotation = self._get_isoquant_y(radius, 1)
+                y_annotation = self._get_isoquant_y(radius, 1).item()
                 offset = 5
-                plt.annotate(f'r = {radius}', xy=(1, y_annotation), color='black', fontsize=8,
+                plt.annotate(f'r = {radius}', xy=(1., y_annotation), color='black', fontsize=8,
                              ha='center', va='center', xytext=(offset, 7), textcoords='offset points')
             elif radius == 1:
-                y_annotation = self._get_isoquant_y(radius, 1)
+                y_annotation = self._get_isoquant_y(radius, 1).item()
                 offset = 5
-                plt.annotate(f'r = {radius}', xy=(1, y_annotation), color='black', fontsize=8,
+                plt.annotate(f'r = {radius}', xy=(1., y_annotation), color='black', fontsize=8,
                              ha='center', va='center', xytext=(offset, 7), textcoords='offset points')
 
         palette = sns.color_palette("dark", len(model_names))
@@ -1143,8 +1166,8 @@ class InterpretableFA:
         radii : list of float, optional
             Radii for the isoquant curves in 'overall' plots. Defaults to [0.25, 0.5, 0.75, 1.00].
         labels : dict of str: list of str, optional
-            Labels for points in 'overall' plots. The keys are model names, and the values are lists of labels for each point.
-            Default is `None`.
+            Labels for points in 'overall' plots. The keys are model names, and the values are lists of labels for each
+            point. Default is `None`.
 
         """
 
