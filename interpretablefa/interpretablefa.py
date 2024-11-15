@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v1.1.1
+# interpretablefa v1.1.2
 
 import math
 import numpy as np
@@ -334,7 +334,7 @@ class InterpretableFA:
         theta = n * np.sum(x * y) - np.sum(x) * np.sum(y)
         theta = theta / (n * np.sum(x ** 2) - (np.sum(x)) ** 2)
         theta = (1 / math.pi) * np.arctan(theta) + 1 / 2
-        agreement_index = tau * theta
+        agreement_index = math.sqrt(tau * theta)
         return agreement_index
 
     def calculate_vertical_index(self, model_name):
@@ -572,7 +572,7 @@ class InterpretableFA:
         theta = n * np.sum(a * b) - np.sum(a) * np.sum(b)
         theta = theta / (n * np.sum(a ** 2) - (np.sum(a)) ** 2)
         theta = (1 / math.pi) * np.arctan(theta) + 1 / 2
-        v = tau * theta
+        v = math.sqrt(tau * theta)
         return v
 
     def _get_overall(self, x, grad, unrotated_loadings, model=None):
