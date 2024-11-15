@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v1.1.0
+# interpretablefa v1.1.1
 
 import math
 import numpy as np
@@ -248,13 +248,13 @@ class InterpretableFA:
 
     def calculate_loading_similarity(self, model_name):
         """
-        This calculates the correlation ranking similarities for each pair of components or variables for the
+        This calculates the loading similarities for each pair of components or variables for the
         specified model.
 
         Parameters
         ----------
         model_name: str
-            The name of the model for which the correlation similarities should be obtained.
+            The name of the model for which the loading similarities should be obtained.
 
         Returns
         ----------
@@ -278,7 +278,7 @@ class InterpretableFA:
 
     def generate_multiset(self, model_name):
         """
-        This generates the multiset containing the set of all ordered pairs of correlation ranking similarities and
+        This generates the multiset containing the set of all ordered pairs of loading similarities and
         prior information for the specified model.
 
         Parameters
@@ -907,15 +907,15 @@ class InterpretableFA:
 
         df = pd.DataFrame({
             'Prior Information': x,
-            'Correlation Ranking Similarity': y
+            'Loading Similarity': y
         })
 
         plt.figure(figsize=(10, 6))
-        sns.regplot(data=df, x='Prior Information', y='Correlation Ranking Similarity', lowess=True,
+        sns.regplot(data=df, x='Prior Information', y='Loading Similarity', lowess=True,
                     scatter_kws={'alpha': 0.5, 'edgecolor': 'w'}, line_kws={'color': 'red'})
         plt.title(title or f'Agreement Index Scatter Plot with LOWESS Curve - Model: {model_name}')
         plt.xlabel('Prior Similarity' if self.embeddings is None else 'Semantic Similarity')
-        plt.ylabel('Correlation Ranking Similarity')
+        plt.ylabel('Loading Similarity')
         plt.grid(True)
         plt.show()
 
