@@ -10,14 +10,14 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v1.1.2
+# interpretablefa v1.2.0
 
 import math
 import numpy as np
 import pandas as pd
-from factor_analyzer import FactorAnalyzer, calculate_kmo, calculate_bartlett_sphericity
+from factor_analyzer import FactorAnalyzer, calculate_kmo, calculate_bartlett_sphericity, covariance_to_correlation
 import tensorflow_hub as hub
-from scipy.stats import kendalltau
+from scipy.stats import kendalltau, chi2
 import nlopt
 from itertools import product
 import seaborn as sns
@@ -43,10 +43,6 @@ class InterpretableFA:
     ----------
     data_: :obj: `pandas.core.frame.DataFrame`
         The data to be used for fitting factor models. Can be either the raw data or the correlation matrix.
-    is_corr_matrix: bool, optional
-        `True` if the data supplied is a correlation matrix and `False` otherwise. Defaults to `True`. Note that if
-        the correlation matrix is supplied, the KMO values, sphericity test result, and estimated factor scores are not
-        provided.
     prior: :obj: `numpy.ndarray` or `None`
         If `prior` is `None`, then the prior is generated using pairwise semantic similarities from the Universal
         Sentence Encoder. If `prior` is of class `numpy.ndarray`, it must be a 2D array (i.e., its shape must be an
@@ -55,6 +51,13 @@ class InterpretableFA:
         The questions associated with each variable. It is assumed that the order of the questions correspond to the
         order of the columns in `data_`. For example, the first element in `questions` correspond to the first column
         of `data_`. If `prior` is not `None`, this is ignored.
+    is_corr_matrix: bool, optional
+        `True` if the data supplied is a correlation matrix and `False` otherwise. Defaults to `True`. Note that if
+        the correlation matrix is supplied, the KMO values, sphericity test result, and estimated factor scores are not
+        provided.
+    sample_size: int, optional
+        The sample size or `None`, if `is_corr_matrix` is `True`. Otherwise, this is ignored and is set to the number
+        of rows in `data_`.
 
     Attributes
     ----------
@@ -62,6 +65,8 @@ class InterpretableFA:
         The data used for fitting factor models.
     is_corr_matrix: bool
         `True` if the data is a correlation matrix and `False` otherwise.
+    sample_size: int
+        The sample size
     prior: :obj: `numpy.ndarray` or `None`
         The prior used for calculating interpretability indices and for performing priorimax/interpmax rotations.
     models: dict
@@ -71,6 +76,10 @@ class InterpretableFA:
         The list of questions used for calculating semantic similarities.
     embeddings: list or `None`
         The embeddings of the questions, used for calculating semantic similarities.
+    kmo: tuple
+        The KMOs per item and overall KMO
+    sphericity: tuple
+        The test statistic and p-value of Bartlett's Test for Sphericity
     orthogonal: dict
         The dictionary containing information on whether a model is orthogonal or not. They keys are the model names
         and each value is either `True` (if the model is orthogonal) or `False`.
@@ -79,7 +88,7 @@ class InterpretableFA:
     use_url = "https://tfhub.dev/google/universal-sentence-encoder/4"
     use_model = None
 
-    def __init__(self, data_, prior, questions, is_corr_matrix=False):
+    def __init__(self, data_, prior, questions, is_corr_matrix=False, sample_size=None):
         """
         Initializes the InterpretableFA object. Note that the first time `InterpretableFA.__init__` is called with
         `prior` set to `None`, the class method `InterpretableFA.load_use_model` is run to load the Universal
@@ -93,11 +102,19 @@ class InterpretableFA:
             raise TypeError("is_corr_matrix must be Boolean")
         self.data_ = data_
         self.is_corr_matrix = is_corr_matrix
+        self.sample_size = None
         self.models = {}
         self.orthogonal = {}
         self.embeddings = None
         self._scaler = 1
         if self.is_corr_matrix:
+            if sample_size is not None:
+                try:
+                    self.sample_size = int(sample_size)
+                except ValueError:
+                    raise TypeError("the sample size must be either None, int, or coercible to int")
+                if self.sample_size < 1:
+                    raise ValueError("the sample size must be at least 1")
             if self.data_.shape[0] != self.data_.shape[1]:
                 raise ValueError("the data correlation matrix must be a square matrix")
             for row in range(self.data_.shape[0]):
@@ -111,12 +128,22 @@ class InterpretableFA:
                         raise ValueError("the data correlation matrix must be symmetric")
                     else:
                         self.data_.iloc[col, row] = val
+                    if row == col:
+                        if not math.isclose(val, 1):
+                            raise ValueError("the diagonal entries of the data correlation matrix must be 1")
+                        else:
+                            val = 1
+                            self.data_.iloc[row, col] = val
                     if abs(val) > 1:
                         raise ValueError("entries in the data correlation matrix must be between -1 and 1, inclusive")
-                    if row == col and val != 1:
-                        raise ValueError("the diagonal entries of the data correlation matrix must be 1")
             if not np.all(np.linalg.eigvals(self.data_) >= 0):
                 raise ValueError("the correlation matrix must be positive semi-definite")
+            self.kmo = self._get_kmo()
+            self.sphericity = self._get_shpericity()
+        else:
+            self.kmo = calculate_kmo(self.data_)
+            self.sphericity = calculate_bartlett_sphericity(self.data_)
+            self.sample_size = self.data_.shape[0]
         if prior is None:
             if not (bool(questions) and isinstance(questions, list) and
                     all(isinstance(question, str) for question in questions)):
@@ -153,6 +180,50 @@ class InterpretableFA:
             self.prior = prior
         else:
             raise TypeError("prior must be a 2D numpy array or None")
+
+    @staticmethod
+    def _corr_to_pcorr(corr_mat):
+        # This gets the partial correlation matrix from the correlation matrix
+
+        pinv = -np.linalg.pinv(corr_mat)
+        np.fill_diagonal(pinv, -np.diag(pinv))
+        return covariance_to_correlation(pinv)
+
+    def _get_kmo(self):
+        # This gets the KMO if data is a correlation matrix
+
+        if not self.is_corr_matrix:
+            raise ValueError("the data must be a correlation matrix")
+        corr = self.data_.to_numpy(copy=True)
+        pcorr = self._corr_to_pcorr(self.data_.to_numpy(copy=True))
+        np.fill_diagonal(corr, 0)
+        np.fill_diagonal(pcorr, 0)
+        pcorr = pcorr ** 2
+        corr = corr ** 2
+        pcorr_sum = np.sum(pcorr, axis=0)
+        corr_sum = np.sum(corr, axis=0)
+        kmo_items = corr_sum / (corr_sum + pcorr_sum)
+        corr_sum_total = np.sum(corr)
+        pcorr_sum_total = np.sum(pcorr)
+        kmo_total = corr_sum_total / (corr_sum_total + pcorr_sum_total)
+        return kmo_items, kmo_total
+
+    def _get_shpericity(self):
+        # This performs the Bartlett's Test for Sphericity
+
+        if not self.is_corr_matrix:
+            raise ValueError("the data must be a correlation matrix")
+        test_stat = None
+        pval = None
+        if self.sample_size is not None:
+            corr = self.data_.to_numpy(copy=True)
+            n = self.sample_size
+            p = corr.shape[0]
+            corr_det = np.linalg.det(corr)
+            test_stat = -np.log(corr_det) * (n - 1 - (2 * p + 5) / 6)
+            dof = p * (p - 1) / 2
+            pval = chi2.sf(test_stat, dof)
+        return test_stat, pval
 
     @staticmethod
     def generate_grouper_prior(size, groupings):
@@ -468,8 +539,8 @@ class InterpretableFA:
         h = self.calculate_horizontal_index(model_name) if procedure == "interpmax" else None
         i = None if h is None else 1 - (math.sqrt(2) / 2) * math.sqrt((v - 1) ** 2 + (h - 1) ** 2)
         communalities = self.models[model_name].get_communalities().tolist()
-        sphericity = calculate_bartlett_sphericity(self.data_) if not self.is_corr_matrix else None
-        kmo = calculate_kmo(self.data_) if not self.is_corr_matrix else None
+        sphericity = self.sphericity
+        kmo = self.kmo
         result = {
             "model": model_name,
             "agreement": v,
@@ -819,8 +890,7 @@ class InterpretableFA:
         for i in range(corr_mat.shape[1]):
             analysis["factor_" + str(i + 1)] = corr_mat[:, i].tolist()
         analysis["communality"] = model.get_communalities().tolist()
-        analysis["kmo_msa"] = calculate_kmo(self.data_)[0].tolist() if not self.is_corr_matrix else \
-            [None] * self.data_.shape[0]
+        analysis["kmo_msa"] = self.kmo[0].tolist()
         analysis = pd.DataFrame(analysis)
         if sorted_:
             temp = analysis.drop(["variable", "communality", "kmo_msa"], axis=1)
