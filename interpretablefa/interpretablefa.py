@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v1.2.0
+# interpretablefa v2.0.0
 
 import math
 import numpy as np
@@ -24,20 +24,20 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-ORTHOGONAL_ROTATIONS = ["priorimax", "interpmax", "varimax", "oblimax", "quartimax", "equamax"]
+ORTHOGONAL_ROTATIONS = ["priorimax", "varimax", "oblimax", "quartimax", "equamax"]
 OBLIQUE_ROTATIONS = ["promax", "oblimin", "quartimin"]
 POSSIBLE_ROTATIONS = ORTHOGONAL_ROTATIONS + OBLIQUE_ROTATIONS
 
 
 class InterpretableFA:
     """
-    The class for interpretable factor analysis, including priorimax and interpmax rotations.
+    The class for interpretable factor analysis, including priorimax rotation.
 
     The class:
         1) Can fit factor models by wrapping `factor_analyzer.factor_analyzer.FactorAnalyzer` from the
         factor_analyzer package
         2) Provides several indices and visualizations for assessing factor models
-        3) Implements the priorimax and interpmax factor rotations/procedures
+        3) Implements the priorimax factor rotation / procedure
 
     Parameters
     ----------
@@ -68,7 +68,7 @@ class InterpretableFA:
     sample_size: int
         The sample size
     prior: :obj: `numpy.ndarray` or `None`
-        The prior used for calculating interpretability indices and for performing priorimax/interpmax rotations.
+        The prior used for calculating the interpretability index and for the performing priorimax rotation.
     models: dict
         The dictionary containing the saved or fitted models, where the keys are the model names and the values are
         the models. Note that a model must be stored in this dictionary in order to analyze them further.
@@ -375,19 +375,77 @@ class InterpretableFA:
                     multiset.append((prior[i, j], loading_similarity[i, j]))
         return multiset
 
-    def calculate_agreement_index(self, model_name):
+    def calculate_tau(self, model_name):
         """
-        This calculates the agreement index for the specified model and factor.
+        This calculates the tau component of the V-index (interpretability index) for the specified model.
 
         Parameters
         ----------
         model_name: str
-            The name of the model for which the agreement index should be obtained.
+            The name of the model for which tau should be obtained.
 
         Returns
         ----------
-        agreement_index: float
-            The agreement index for the specified model and factor.
+        tau: float
+            The tau component of the V-index for the specified model.
+        """
+
+        if model_name not in self.models.keys():
+            raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
+        multiset = self.generate_multiset(model_name)
+        x = []
+        y = []
+        n = len(multiset)
+        for i in range(n):
+            x.append(multiset[i][0])
+            y.append(multiset[i][1])
+        tau = (1 / 2) * (kendalltau(x, y, variant="b").statistic + 1)
+        return tau
+
+    def calculate_theta(self, model_name):
+        """
+        This calculates the theta component of the V-index (interpretability index) for the specified model.
+
+        Parameters
+        ----------
+        model_name: str
+            The name of the model for which theta should be obtained.
+
+        Returns
+        ----------
+        theta: float
+            The theta component of the V-index for the specified model.
+        """
+
+        if model_name not in self.models.keys():
+            raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
+        multiset = self.generate_multiset(model_name)
+        x = []
+        y = []
+        n = len(multiset)
+        for i in range(n):
+            x.append(multiset[i][0])
+            y.append(multiset[i][1])
+        x = np.array(x)
+        y = np.array(y)
+        theta = n * np.sum(x * y) - np.sum(x) * np.sum(y)
+        theta = theta / (n * np.sum(x ** 2) - (np.sum(x)) ** 2)
+        theta = (1 / math.pi) * np.arctan(theta) + 1 / 2
+        return theta
+
+    def calculate_v_index(self, model_name):
+        """
+        This calculates the V-index (interpretability index) for the specified model.
+
+        Parameters
+        ----------
+        model_name: str
+            The name of the model for which the V-index should be obtained.
+
+        Returns
+        ----------
+        v_index: float
+            The V-index for the specified model.
         """
 
         if model_name not in self.models.keys():
@@ -405,101 +463,10 @@ class InterpretableFA:
         theta = n * np.sum(x * y) - np.sum(x) * np.sum(y)
         theta = theta / (n * np.sum(x ** 2) - (np.sum(x)) ** 2)
         theta = (1 / math.pi) * np.arctan(theta) + 1 / 2
-        agreement_index = math.sqrt(tau * theta)
-        return agreement_index
+        v_index = math.sqrt(tau * theta)
+        return v_index
 
-    def calculate_vertical_index(self, model_name):
-        """
-        This is a wrapper for `calculate_agreement_index`. This calculates the vertical index for the specified model.
-        """
-
-        return self.calculate_agreement_index(model_name)
-
-    def calculate_central_meanings(self, model_name):
-        """
-        This calculates the central meanings for the specified model.
-
-        Parameters
-        ----------
-        model_name: str
-            The name of the model for which the central meanings should be obtained.
-
-        Returns
-        ----------
-        central_meanings: list
-            The list of central meanings (a list of `numpy.ndarray`). The first element of the list is the central
-            meaning of the first factor expressed a `numpy.ndarray` and so on.
-        """
-
-        if model_name not in self.models.keys():
-            raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
-        embeddings = self.embeddings
-        variable_factor_correlations = self.calculate_variable_factor_correlations(model_name)
-        num_of_factors = variable_factor_correlations.shape[1]
-        num_of_vars = variable_factor_correlations.shape[0]
-        central_meanings = []
-        for i in range(num_of_factors):
-            corrs = np.absolute(np.array(variable_factor_correlations[:, i]))
-            numerator = 0
-            denominator = np.sum(corrs)
-            for j in range(num_of_vars):
-                numerator += (corrs[j] * embeddings[j])
-            central_meanings.append((numerator / denominator).numpy())
-        return central_meanings
-
-    def calculate_horizontal_index(self, model_name):
-        """
-        This calculates the horizontal index or H-index for the specified model.
-
-        Parameters
-        ----------
-        model_name: str
-            The name of the model for which the H-index should be obtained.
-
-        Returns
-        ----------
-        h_index: float
-            The H-index for the specified model.
-        """
-
-        if model_name not in self.models.keys():
-            raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
-        central_meanings = self.calculate_central_meanings(model_name)
-        sum_ = 0
-        for i in range(len(central_meanings)):
-            for j in range(i):
-                numerator = np.inner(central_meanings[i], central_meanings[j])
-                magnitude_i = np.sqrt(central_meanings[i].dot(central_meanings[i]))
-                magnitude_j = np.sqrt(central_meanings[j].dot(central_meanings[j]))
-                denominator = magnitude_i * magnitude_j
-                sum_ += abs(np.arccos(numerator / denominator) - math.pi / 2)
-        t = len(central_meanings)
-        h_index = 1 - (4 / (math.pi * t * (t - 1))) * sum_
-        return h_index
-
-    def calculate_overall_index(self, model_name):
-        """
-        This calculates the overall interpretability index for the specified model.
-
-        Parameters
-        ----------
-        model_name: str
-            The name of the model for which the overall interpretability index should be obtained.
-
-        Returns
-        ----------
-        overall_index: float
-            The overall interpretability index for the specified model.
-        """
-
-        if model_name not in self.models.keys():
-            raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
-        v = self.calculate_agreement_index(model_name)
-        h = self.calculate_horizontal_index(model_name)
-        overall_index = 1 - (math.sqrt(2) / 2) * math.sqrt((v - 1) ** 2 + (h - 1) ** 2)
-        return overall_index
-
-    def calculate_indices(self, model_name, procedure="priorimax"):
+    def calculate_indices(self, model_name):
         """
         This calculates several indices for the specified model.
 
@@ -507,45 +474,32 @@ class InterpretableFA:
         ----------
         model_name: str
             The name of the model for which the indices should be obtained.
-        procedure: str
-            This must be either 'priorimax' or 'interpmax'. If `procedure` is 'interpmax', then the H-index and the
-            overall index are calculated as well. Otherwise, they are not calculated.
 
         Returns
         ----------
         result: dict
             A dictionary containing the indices with the following keys:
                 1) `model`: str, the model name
-                2) `agreement`: float, the A-index
-                3) `horizontal`: float or None, the H-index, or `None` if `procedure` is 'priorimax'
-                4) `overall`: float or None, the overall index, or `None` if `procedure` is 'priorimax'
-                5) `per_factor_agreement`: list, the agreement index per factor (the index for the first factor is the
-                first element and so on)
-                6) `communalities`: :obj: `numpy.ndarray`, the communalities (the communality of the first variable is
+                2) `v_index`: float, the V-index
+                3) `communalities`: :obj: `numpy.ndarray`, the communalities (the communality of the first variable is
                 the first element and so on)
-                7) `sphericity`: tuple, the test statistic (float) and the p-value (float), in that order, for
+                4) `sphericity`: tuple, the test statistic (float) and the p-value (float), in that order, for
                 Bartlett's Sphericity Test
-                8) `kmo`: tuple, the KMO score per variable (:obj: `numpy.ndarray`) and the overall KMO score (float),
+                5) `kmo`: tuple, the KMO score per variable (:obj: `numpy.ndarray`) and the overall KMO score (float),
                 in that order
-                9) `sufficiency`: tuple or None, the test statistic (float), the degrees of freedom (int), and the
+                6) `sufficiency`: tuple or None, the test statistic (float), the degrees of freedom (int), and the
                 p-value (float), in that order, for the sufficiency test (`None` if calculations fail)
         """
 
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
-        if procedure != "interpmax" and procedure != "priorimax":
-            raise ValueError("procedure must be either 'interpmax' or 'priorimax'")
-        v = self.calculate_agreement_index(model_name)
-        h = self.calculate_horizontal_index(model_name) if procedure == "interpmax" else None
-        i = None if h is None else 1 - (math.sqrt(2) / 2) * math.sqrt((v - 1) ** 2 + (h - 1) ** 2)
+        v = self.calculate_v_index(model_name)
         communalities = self.models[model_name].get_communalities().tolist()
         sphericity = self.sphericity
         kmo = self.kmo
         result = {
             "model": model_name,
-            "agreement": v,
-            "horizontal": h,
-            "overall": i,
+            "v_index": v,
             "communalities": communalities,
             "sphericity": sphericity,
             "kmo": kmo,
@@ -587,38 +541,8 @@ class InterpretableFA:
         loadings = np.matmul(unrotated_loadings, rotation_matrix)
         return loadings
 
-    def _get_horizontal(self, x, grad, unrotated_loadings, model=None):
-        # This gets the H-index
-
-        if model is None:
-            loadings = self._get_rotated_loadings(x, unrotated_loadings)
-        else:
-            loadings = model.loadings_
-        num_of_vars = self.data_.shape[1]
-        embeddings = self.embeddings
-        num_of_factors = loadings.shape[1]
-        variable_factor_correlations = loadings / self._scaler
-        central_meanings = []
-        for i in range(num_of_factors):
-            corrs = np.absolute(np.array(variable_factor_correlations[:, i]))
-            numerator = 0
-            denominator = np.sum(corrs)
-            for j in range(num_of_vars):
-                numerator += (corrs[j] * embeddings[j])
-            central_meanings.append((numerator / denominator).numpy())
-        sum_ = 0
-        for i in range(len(central_meanings)):
-            for j in range(i):
-                numerator = np.inner(central_meanings[i], central_meanings[j])
-                magnitude_i = np.sqrt(central_meanings[i].dot(central_meanings[i]))
-                magnitude_j = np.sqrt(central_meanings[j].dot(central_meanings[j]))
-                denominator = magnitude_i * magnitude_j
-                sum_ += abs(np.arccos(numerator / denominator) - math.pi / 2)
-        t = len(central_meanings)
-        return 1 - (4 / (math.pi * t * (t - 1))) * sum_
-
-    def _get_agreement(self, x, grad, unrotated_loadings, model=None):
-        # This gets the A-index
+    def _get_v(self, x, grad, unrotated_loadings, model=None):
+        # This gets the V-index
 
         if model is None:
             loadings = self._get_rotated_loadings(x, unrotated_loadings)
@@ -646,17 +570,6 @@ class InterpretableFA:
         v = math.sqrt(tau * theta)
         return v
 
-    def _get_overall(self, x, grad, unrotated_loadings, model=None):
-        # This gets the overall interpretability index
-
-        if model is None:
-            v = self._get_agreement(x, grad, unrotated_loadings)
-            h = self._get_horizontal(x, grad, unrotated_loadings)
-        else:
-            v = self._get_agreement(None, None, None, model)
-            h = self._get_horizontal(None, None, None, model)
-        return 1 - (math.sqrt(2) / 2) * math.sqrt((v - 1) ** 2 + (h - 1) ** 2)
-
     @staticmethod
     def _generate_constraint(ind):
         # This generates a constraint for the signature matrix
@@ -666,30 +579,25 @@ class InterpretableFA:
 
         return _constraint
 
-    def _get_best_predefined(self, rotation, num_factors):
+    def _get_best_predefined(self, num_factors):
         # This gets the best rotation (in terms of the interpretability index) among the pre-defined rotations
 
         models = []
         indices = []
         rot_names = []
-        for rot in np.setdiff1d(ORTHOGONAL_ROTATIONS, ["priorimax", "interpmax"]):
+        for rot in np.setdiff1d(ORTHOGONAL_ROTATIONS, ["priorimax"]):
             temp_model = FactorAnalyzer(n_factors=num_factors, rotation=rot, is_corr_matrix=self.is_corr_matrix)
             temp_model.fit(self.data_)
             models.append(temp_model)
             rot_names.append(rot)
-            if rotation == "priorimax":
-                indices.append(self._get_agreement(None, None, None, models[-1]))
-            elif rotation == "interpmax":
-                indices.append(self._get_overall(None, None, None, models[-1]))
+            indices.append(self._get_v(None, None, None, models[-1]))
         return [models[indices.index(max(indices))], max(indices), rot_names[indices.index(max(indices))]]
 
-    def _rotate_factors(self, model_name, rotation="priorimax", max_time=300.0, opt_seed=123):
-        # This implements the priorimax and interpmax rotations
+    def _rotate_factors(self, model_name, max_time=300.0, opt_seed=123):
+        # This implements the priorimax rotation
 
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
-        if rotation not in ["priorimax", "interpmax"]:
-            raise ValueError("rotation must be either 'priorimax' or 'interpmax'.")
         try:
             max_time = float(max_time)
         except ValueError:
@@ -698,10 +606,10 @@ class InterpretableFA:
             opt_seed = int(opt_seed)
         except ValueError:
             raise TypeError("opt_seed must be an int or coercible to int")
-        none_ind = (self.calculate_agreement_index(model_name) if rotation == "priorimax"
-                    else self.calculate_overall_index(model_name))
+        none_ind = self.calculate_v_index(model_name)
+
         opt_ind = -1
-        pre_mod, pre_ind, pre_name = self._get_best_predefined(rotation, self.models[model_name].loadings_.shape[1])
+        pre_mod, pre_ind, pre_name = self._get_best_predefined(self.models[model_name].loadings_.shape[1])
         unrotated_loadings = self.models[model_name].loadings_.copy()
         if max_time > 0:
             num_of_factors = unrotated_loadings.shape[1]
@@ -714,10 +622,7 @@ class InterpretableFA:
             opt.set_population(200 * num_of_mat_vars)
             opt.set_lower_bounds(np.array([-1] * num_of_mat_vars))
             opt.set_upper_bounds(np.array([1] * num_of_mat_vars))
-            if rotation == "priorimax":
-                opt.set_max_objective(lambda x, grad: self._get_agreement(x, grad, unrotated_loadings))
-            elif rotation == "interpmax":
-                opt.set_max_objective(lambda x, grad: self._get_overall(x, grad, unrotated_loadings))
+            opt.set_max_objective(lambda x, grad: self._get_v(x, grad, unrotated_loadings))
             for i in range(num_of_diag_vars):
                 opt.add_equality_constraint(self._generate_constraint(num_of_skew_vars + i))
             results = opt.optimize(np.append(np.zeros(num_of_skew_vars), np.ones(num_of_diag_vars)))
@@ -725,20 +630,19 @@ class InterpretableFA:
             rotated_loadings = self._get_rotated_loadings(results, unrotated_loadings)
             self.models[model_name].loadings_ = rotated_loadings
             self.models[model_name].rotation_matrix_ = rotation_matrix
-            opt_ind = (self.calculate_agreement_index(model_name) if rotation == "priorimax"
-                       else self.calculate_overall_index(model_name))
+            opt_ind = self.calculate_v_index(model_name)
         inds = [none_ind, pre_ind, opt_ind]
         best = inds.index(max(inds))
         if best == 0:
             self.models[model_name].loadings_ = unrotated_loadings
             self.models[model_name].rotation_matrix_ = None
-            print(f"[{model_name}] The best rotation found ({rotation}) is {None}.")
+            print(f"[{model_name}] The best rotation found (priorimax) is {None}.")
         elif best == 1:
             self.models[model_name].loadings_ = pre_mod.loadings_
             self.models[model_name].rotation_matrix_ = pre_mod.rotation_matrix_
-            print(f"[{model_name}] The best rotation found ({rotation}) is pre-defined ({pre_name}).")
+            print(f"[{model_name}] The best rotation found (priorimax) is pre-defined ({pre_name}).")
         elif best == 2:
-            print(f"[{model_name}] The best rotation found ({rotation}) is "
+            print(f"[{model_name}] The best rotation found (priorimax) is "
                   f"\n{self.models[model_name].rotation_matrix_}.")
 
     def fit_factor_model(self, model_name, n_factors=3, rotation="priorimax", max_time=300.0, opt_seed=1,
@@ -747,7 +651,7 @@ class InterpretableFA:
         """
         This fits the factor model (and saves it in `self.models`). This extends
         `factor_analyzer.factor_analyzer.FactorAnalyzer` from the factor_analyzer package to include
-        the priorimax and interpmax rotations.
+        the priorimax rotation.
 
         Parameters
         ----------
@@ -760,25 +664,23 @@ class InterpretableFA:
             performed. Possible values include:
 
                 a) priorimax (orthogonal rotation)
-                b) interpmax (orthogonal rotation)
-                c) varimax (orthogonal rotation)
-                d) promax (oblique rotation)
-                e) oblimin (oblique rotation)
-                f) oblimax (orthogonal rotation)
-                g) quartimin (oblique rotation)
-                h) quartimax (orthogonal rotation)
-                i) equamax (orthogonal rotation)
+                b) varimax (orthogonal rotation)
+                c) promax (oblique rotation)
+                d) oblimin (oblique rotation)
+                e) oblimax (orthogonal rotation)
+                f) quartimin (oblique rotation)
+                g) quartimax (orthogonal rotation)
+                h) equamax (orthogonal rotation)
 
-            Defaults to 'priorimax'. Note that if `rotation` is 'priorimax' or 'interpmax', the model is fit without
+            Defaults to 'priorimax'. Note that if `rotation` is 'priorimax', the model is fit without
             rotation first with `factor_analyzer.factor_analyzer.FactorAnalyzer`. Then, `loadings_` and
             `rotation_matrix_` are updated with the new matrices (and these are the only attributes that are updated).
         max_time: float, optional
-            If `rotation` is either 'priorimax' or 'interpmax', this is the maximum time in seconds for which the
+            If `rotation` is either 'priorimax', this is the maximum time in seconds for which the
             optimizer will run to find the rotation matrix. If `max_time` is 0 or negative, then the pre-defined
             orthogonal rotation (e.g., varimax, equamax, etc.) with the best index value is selected (i.e., the
-            interpmax or priorimax procedure is performed on the set of pre-defined orthogonal rotations). The
-            default value is 300.0 (i.e., 5 minutes). This is ignored when `rotation` is neither 'priorimax' nor
-            'interpmax'.
+            priorimax procedure is performed on the set of pre-defined orthogonal rotations). The
+            default value is 300.0 (i.e., 5 minutes). This is ignored when `rotation` is not 'priorimax'.
         opt_seed: int, optional
             This is the seed used for the optimizer (ISRES). The default value is 1.
         method : {'minres', 'ml', 'principal'}, optional
@@ -810,7 +712,7 @@ class InterpretableFA:
         except ValueError:
             raise TypeError("max_time must be a float or coercible to float")
         self.orthogonal[model_name] = rotation is None or rotation in ORTHOGONAL_ROTATIONS
-        if rotation in ["priorimax", "interpmax"]:
+        if rotation == "priorimax":
             special_rotation = rotation
             rotation = None
         else:
@@ -820,29 +722,26 @@ class InterpretableFA:
         fa.fit(self.data_)
         self.models[model_name] = fa
         if special_rotation != "none":
-            self._rotate_factors(model_name, special_rotation, max_time, opt_seed)
+            self._rotate_factors(model_name, max_time, opt_seed)
         model = self.models[model_name]
         return model
 
-    def summarize_model(self, model_name, procedure="priorimax", loadings_and_scores=True):
+    def summarize_model(self, model_name, loadings_and_scores=True):
         """
-        This returns the variable-factor correlations matrix, the loadings, and the estimated factor scores for the
-        specified model.
+        This returns the variable-factor correlations matrix, the indices, the loadings, and
+        the estimated factor scores for the specified model.
 
         Parameters
         ----------
         model_name: str
             The name of the model to be summarized.
-        procedure: str
-            `procedure` must be either 'interpmax' or 'priorimax'. If the value is 'interpmax', the H-index and the
-            overall index are included. Otherwise, they are not reported. Defaults to 'priorimax'.
         loadings_and_scores: bool
             Whether to include the loadings and the scores. Defaults to `True`.
 
         Returns
         ----------
         summary: dict
-            A dictionary containing the result of `self.calculate_indices(model_name, procedure)` and the additional
+            A dictionary containing the result of `self.calculate_indices(model_name)` and the additional
             keys:
                 1) `variable_factor_correlations`: the variable-factor correlations matrix
                 2) `loadings`: the loading matrix
@@ -851,7 +750,7 @@ class InterpretableFA:
 
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
-        summary = self.calculate_indices(model_name, procedure)
+        summary = self.calculate_indices(model_name)
         variable_factor = self.calculate_variable_factor_correlations(model_name)
         loadings = self.models[model_name].loadings_
         scores = self.models[model_name].transform(self.data_) if not self.is_corr_matrix else None
@@ -916,9 +815,10 @@ class InterpretableFA:
         del self.models[model_name]
         del self.orthogonal[model_name]
 
-    def select_factor_model(self, models="all", procedure="interpmax"):
+    def select_factor_model(self, models="all"):
         """
-        This performs the 'interpmax' or 'priorimax' procedures. Note that this is not the rotation method.
+        This performs the 'priorimax' procedure (model selection based on the V-index).
+        Note that this is not the rotation method.
 
         Parameters
         ----------
@@ -926,8 +826,6 @@ class InterpretableFA:
             If the value is 'all', then the procedure is performed on`self.models`. The value can also be a
             list of the model names and if so, the procedure will be performed on the specified models. Defaults to
             'all'.
-        procedure: str
-            The procedure to be done and can be either 'interpmax' or 'priorimax'. Defaults to 'interpmax'.
 
         Returns
         ----------
@@ -947,23 +845,22 @@ class InterpretableFA:
         if len(models) == 0:
             raise ValueError("list cannot have a length of 0")
         for model in models:
-            results.append(self.summarize_model(model, procedure))
-        if procedure == "interpmax":
-            results = sorted(results, key=lambda x: x["overall"])
-        elif procedure == "priorimax":
-            results = sorted(results, key=lambda x: x["agreement"])
-        else:
-            raise ValueError("procedure must be either 'interpmax' or 'priorimax'")
+            results.append(self.summarize_model(model))
+        results = sorted(results, key=lambda x: x["v_index"])
         return results
 
-    def agreement_plot(self, model_name, title=None):
+    def interp_plot(self, model_name, title=None, w=10, h=6):
         """
-        This generates scatter plots of the agreement index for the specified model with LOWESS curves.
+        This generates the interpretability plot with LOWESS curve for the specified model.
 
         Parameters
         ----------
         model_name: str
-            The name of the model for which the agreement index should be visualized.
+            The name of the model for which the V-index should be visualized.
+        w: float, optional
+            The width of the figure in inches.
+        h: float, optional
+            The height of the figure in inches.
         title: str, optional
             The title of the plot. If `None`, a default title will be used.
         """
@@ -980,16 +877,16 @@ class InterpretableFA:
             'Loading Similarity': y
         })
 
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=(w, h))
         sns.regplot(data=df, x='Prior Information', y='Loading Similarity', lowess=True,
                     scatter_kws={'alpha': 0.5, 'edgecolor': 'w'}, line_kws={'color': 'red'})
-        plt.title(title or f'Agreement Index Scatter Plot with LOWESS Curve - Model: {model_name}')
+        plt.title(title or f'Interpretability Plot with LOWESS Curve - Model: {model_name}')
         plt.xlabel('Prior Similarity' if self.embeddings is None else 'Semantic Similarity')
         plt.ylabel('Loading Similarity')
         plt.grid(True)
         plt.show()
 
-    def var_factor_corr_plot(self, model_name, sorted_=True, title=None, cmap=None):
+    def var_factor_corr_plot(self, model_name, sorted_=True, title=None, w=10, h=8, cmap=None):
         """
         This generates a heatmap of the variable-factor correlations with a user-defined colormap or a default colormap.
 
@@ -1001,6 +898,10 @@ class InterpretableFA:
             Whether the variables should be sorted according to their largest correlations or not.
         title: str, optional
             The title of the heatmap plot. If `None`, a default title will be used.
+        w: float, optional
+            The width of the figure in inches.
+        h: float, optional
+            The height of the figure in inches.
         cmap: str or :obj:`matplotlib.colors.Colormap`, optional
             The colormap to use for the heatmap. Can be a string for predefined colormaps or an
             obj:`matplotlib.colors.Colormap`. If `None`, a default colormap will be used.
@@ -1029,228 +930,7 @@ class InterpretableFA:
                 raise ValueError(f"Predefined colormap '{cmap}' is not available.")
             cmap = plt.get_cmap(cmap)
 
-        plt.figure(figsize=(10, 8))
+        plt.figure(figsize=(w, h))
         sns.heatmap(df_corr, cmap=cmap, center=0, annot=True, fmt='.2f', linewidths=0.5)
         plt.title(title or f'Variable-Factor Correlation Heatmap - Model: {model_name}')
         plt.show()
-
-    def _get_v_h_indices(self, model_names):
-        """
-        This gets the indices (V-index and H-index) for the specified models.
-
-        Parameters
-        ----------
-        model_names: list of str
-            The names of the models to analyze.
-
-        Returns
-        ----------
-        list of tuples
-            A list containing tuples of (V-index, H-index) for each model.
-        """
-
-        indices = []
-        for model_name in model_names:
-            v_index = self.calculate_agreement_index(model_name)
-            h_index = self.calculate_horizontal_index(model_name)
-
-            indices.append((v_index, h_index))
-
-        return indices
-
-    @staticmethod
-    def _get_isoquant_x(radius):
-        """
-        This calculates the x values for the isoquant curve based on the radius.
-
-        Parameters
-        ----------
-        radius: float
-            The radius of the isoquant curve.
-
-        Returns
-        ----------
-        np.ndarray
-            Array of x values.
-        """
-
-        if radius < 1:
-            x_vals = np.linspace(1 - radius, 1, 400)
-        else:
-            x_vals = np.linspace(0, 1 - np.sqrt(radius ** 2 - 1), 400)
-        return x_vals
-
-    @staticmethod
-    def _get_isoquant_y(radius, x_vals):
-        """
-        This returns the y-values of the isoquant curve for a given radius and x-values.
-
-        Parameters
-        ----------
-        radius: float
-            The radius of the isoquant curve.
-        x_vals: array-like
-            Array of x-values for which to compute the y-values.
-
-        Returns
-        ----------
-        np.ndarray
-            Array of y-values for the isoquant curve.
-        """
-        return 1 - np.sqrt(radius ** 2 - (x_vals - 1) ** 2)
-
-    @staticmethod
-    def _get_isoquant_curve(radius):
-        """
-        This returns the x-values and y-values of the isoquant curve for a given radius.
-
-        Parameters
-        ----------
-        radius : float
-            The radius of the isoquant curve.
-
-        Returns
-        -------
-        tuple of np.ndarray
-            A tuple containing two arrays:
-            - x_vals (np.ndarray): Array of x-values for the isoquant curve.
-            - y_vals (np.ndarray): Array of y-values for the isoquant curve.
-        """
-
-        x_vals = InterpretableFA._get_isoquant_x(radius)
-        y_vals = InterpretableFA._get_isoquant_y(radius, x_vals)
-        return x_vals, y_vals
-
-    def overall_plot(self, model_names, title=None, radii=None, labels=None):
-        """
-        This visualizes the overall interpretability indices with fixed isoquant curves for specified models.
-        Draws a line from the closest point to (1, 1) for the model with the smallest distance.
-
-        Parameters
-        ----------
-        model_names : list of str
-            List of model names to visualize.
-        title : str, optional
-            Title of the plot. Default is `None`.
-        radii : list of float, optional
-            Radii of isoquant curves. Defaults to [0.25, 0.5, 0.75, 1.00].
-        labels : dict of str, list of str, optional
-            Labels for specific points in each model. The keys are model names, and the values are lists of labels for
-            each point. Default is `None`.
-        """
-
-        if radii is None:
-            radii = [0.25, 0.5, 0.75, 1.00]
-
-        plt.figure(figsize=(8, 8))
-        plt.xlim(-0.05, 1.05)
-        plt.ylim(-0.05, 1.05)
-
-        # Plot dashed lines for reference
-        plt.axhline(y=0, color='black', linestyle='dashed')
-        plt.axhline(y=1, color='black', linestyle='dashed')
-        plt.axvline(x=0, color='black', linestyle='dashed')
-        plt.axvline(x=1, color='black', linestyle='dashed')
-
-        # Plot isoquant curves
-        for radius in radii:
-            x_vals, y_vals = self._get_isoquant_curve(radius)
-            plt.plot(x_vals, y_vals, linestyle='dashed', color='black')
-
-            if radius < 1:
-                y_annotation = self._get_isoquant_y(radius, 1).item()
-                offset = 5
-                plt.annotate(f'r = {radius}', xy=(1., y_annotation), color='black', fontsize=8,
-                             ha='center', va='center', xytext=(offset, 7), textcoords='offset points')
-            elif radius == 1:
-                y_annotation = self._get_isoquant_y(radius, 1).item()
-                offset = 5
-                plt.annotate(f'r = {radius}', xy=(1., y_annotation), color='black', fontsize=8,
-                             ha='center', va='center', xytext=(offset, 7), textcoords='offset points')
-
-        palette = sns.color_palette("dark", len(model_names))
-
-        min_distance = float('inf')
-        min_distance_model = None
-        min_distance_point = None
-
-        # Determine the closest point globally
-        for idx, model_name in enumerate(model_names):
-            points = self._get_v_h_indices([model_name])
-            if not points:
-                continue
-
-            x_vals, y_vals = zip(*points)
-
-            # Calculate distances from (1, 1) and find the point with the smallest distance
-            distances = [np.sqrt((x - 1) ** 2 + (y - 1) ** 2) for x, y in points]
-            min_distance_index = np.argmin(distances)
-            min_distance_for_model = distances[min_distance_index]
-
-            if min_distance_for_model < min_distance:
-                min_distance = min_distance_for_model
-                min_distance_model = model_name
-                min_distance_point = points[min_distance_index]
-
-            plt.scatter(x_vals, y_vals, s=50, color=palette[idx], label=model_name)
-
-            if labels and model_name in labels:
-                for (x, y), label in zip(points, labels[model_name]):
-                    plt.text(x - 0.05, y - 0.05, label, fontsize=12, color=palette[idx])
-
-        # Draw line to (1,1) only for the model with the smallest distance
-        if min_distance_model and min_distance_point:
-            min_x, min_y = min_distance_point
-            plt.plot([min_x, 1], [min_y, 1], color='gray', linestyle='dashed', linewidth=1.5,
-                     label=f'Best - {min_distance_model}')
-
-        plt.title(title or f'Isoquant Curve for {", ".join(model_names)}')
-        plt.xlabel("Vertical index V")
-        plt.ylabel("Horizontal index H")
-        plt.grid(False)
-        plt.legend(loc='upper left')
-        plt.show()
-
-    def visualize_interpretability(self, model_names, plot_type='all', cmap=None,
-                                   title_corr=None, title_agreement=None, title_overall=None, sorted_=True,
-                                   radii=None, labels=None):
-        """
-        This visualizes different aspects of interpretability indices based on the specified plot type.
-
-        Parameters
-        ----------
-        model_names : list of str
-            List of model names to visualize.
-        plot_type : str, optional
-            Type of plot to generate. Can be 'var_factor_corr', 'agreement', 'overall', or 'all'. Defaults to 'all'.
-        cmap : str or :obj:`matplotlib.colors.Colormap`, optional
-            Colormap for 'var_factor_corr' plots. If `None`, the default colormap is used.
-        title_corr : str, optional
-            Title for the 'var_factor_corr' plot. If `None`, a default title is used.
-        title_agreement : str, optional
-            Title for the 'agreement' plot. If `None`, a default title is used.
-        title_overall : str, optional
-            Title for the 'overall' plot. If `None`, a default title is used.
-        sorted_ : bool, optional
-            Whether to sort the heatmap in 'var_factor_corr' plots. Defaults to `True`.
-        radii : list of float, optional
-            Radii for the isoquant curves in 'overall' plots. Defaults to [0.25, 0.5, 0.75, 1.00].
-        labels : dict of str: list of str, optional
-            Labels for points in 'overall' plots. The keys are model names, and the values are lists of labels for each
-            point. Default is `None`.
-
-        """
-
-        if radii is None:
-            radii = [0.25, 0.5, 0.75, 1.00]
-
-        if plot_type in ['var_factor_corr', 'all']:
-            for model_name in model_names:
-                self.var_factor_corr_plot(model_name, sorted_=sorted_, title=title_corr, cmap=cmap)
-
-        if plot_type in ['agreement', 'all']:
-            for model_name in model_names:
-                self.agreement_plot(model_name, title=title_agreement)
-
-        if plot_type in ['overall', 'all']:
-            self.overall_plot(model_names, title=title_overall, radii=radii, labels=labels)
