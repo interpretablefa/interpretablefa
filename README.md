@@ -1,10 +1,10 @@
 # The `interpretablefa` package
 ## Overview
-This is a package for performing interpretable factor analysis. This implements the several indices, as well as the priorimax and interpmax rotations and procedures, that are described [here](https://arxiv.org/abs/2409.11525).
+This is a package for performing interpretable factor analysis. This implements the priorimax rotation, including the associated interpretability index and plot, that are described [here](https://arxiv.org/abs/2409.11525).
 
 It also contains several helper and visualization functions and wraps several functions from the `factor_analyzer` package.
 
-For more details about the methods implemented and some of the package's features, see [Interpretability Indices and Soft Constraints for Factor Models](https://arxiv.org/abs/2409.11525). The package's source code can be found [here](https://github.com/interpretablefa/interpretablefa).
+For more details about the methods implemented and some of the package's features, see [Pairwise Target Rotation for Factor Models](https://arxiv.org/abs/2409.11525). The package's source code can be found [here](https://github.com/interpretablefa/interpretablefa).
 
 The linked paper provides some documentation to the package and docstrings are available. However, a comprehensive guide or documentation is still under development.
 ## Example
@@ -31,13 +31,13 @@ analyzer.fit_factor_model("model", 4, "priorimax", 43200.0)
 
 # get the results
 print(analyzer.models["model"].rotation_matrix_)
-print(analyzer.calculate_indices("model")["agreement"])
+print(analyzer.calculate_indices("model")["v_index"])
 
 # visualize the results
 ## get the variable-factor correlations heatmap
 analyzer.var_factor_corr_plot("model")
 ## get the agreement plot
-analyzer.agreement_plot("model")
+analyzer.interp_plot("model")
 
 ```
 ## Requirements
