@@ -1,16 +1,17 @@
-# Copyright 2024 Justin Philip Tuazon, Gia Mizrane Abubo
+# Copyright 2025 Justin Philip Tuazon, Gia Mizrane Abubo
 
 # This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
 # License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
 # version.
-#
+
 # This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-#
+
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v2.0.0
+# interpretablefa v3.0.0
+# https://pypi.org/project/interpretablefa/
 
 import math
 import numpy as np
@@ -23,10 +24,14 @@ from itertools import product
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import warnings
 
 ORTHOGONAL_ROTATIONS = ["priorimax", "varimax", "oblimax", "quartimax", "equamax"]
 OBLIQUE_ROTATIONS = ["promax", "oblimin", "quartimin"]
 POSSIBLE_ROTATIONS = ORTHOGONAL_ROTATIONS + OBLIQUE_ROTATIONS
+OPT_SEED = 123
+LOCAL_OPT_TOL_REL = 1e-8
+LOCAL_OPT_TOL_ABS = 1e-8
 
 
 class InterpretableFA:
@@ -58,6 +63,14 @@ class InterpretableFA:
     sample_size: int, optional
         The sample size or `None`, if `is_corr_matrix` is `True`. Otherwise, this is ignored and is set to the number
         of rows in `data_`.
+    opt_seed: int, optional
+        The random seed used for optimization problems for priorimax rotations. The default value is `123`.
+    local_opt_tol_rel: float, optional
+        The relative function value tolerance used for local optimization problems for priorimax. The default value
+        is `1e-8`.
+    local_opt_tol_abs: float, optional
+        The absolute function value tolerance used for local optimization problems for priorimax. The default value
+        is `1e-8`.
 
     Attributes
     ----------
@@ -88,7 +101,8 @@ class InterpretableFA:
     use_url = "https://tfhub.dev/google/universal-sentence-encoder/4"
     use_model = None
 
-    def __init__(self, data_, prior, questions, is_corr_matrix=False, sample_size=None):
+    def __init__(self, data_, prior, questions, is_corr_matrix=False, sample_size=None, opt_seed=OPT_SEED,
+                 local_opt_tol_rel=LOCAL_OPT_TOL_REL, local_opt_tol_abs=LOCAL_OPT_TOL_ABS):
         """
         Initializes the InterpretableFA object. Note that the first time `InterpretableFA.__init__` is called with
         `prior` set to `None`, the class method `InterpretableFA.load_use_model` is run to load the Universal
@@ -96,10 +110,25 @@ class InterpretableFA:
         `InterpretableFA.use_model` is not `None`), `InterpretableFA.load_use_model` will not be called anymore.
         """
 
+        # Initial arg checks
         if not isinstance(data_, pd.DataFrame):
             raise TypeError("data must be a pandas dataframe")
         if not isinstance(is_corr_matrix, bool):
-            raise TypeError("is_corr_matrix must be Boolean")
+            raise TypeError("is_corr_matrix must be bool")
+        try:
+            opt_seed = int(opt_seed)
+        except ValueError:
+            raise TypeError("opt_seed must be int or coercible to int")
+        try:
+            local_opt_tol_rel = float(local_opt_tol_rel)
+        except ValueError:
+            raise TypeError("local_opt_tol_rel must be float or coercible to float")
+        try:
+            local_opt_tol_abs = float(local_opt_tol_abs)
+        except ValueError:
+            raise TypeError("local_opt_tol_abs must be float or coercible to float")
+
+        # Initial values
         self.data_ = data_
         self.is_corr_matrix = is_corr_matrix
         self.sample_size = None
@@ -107,6 +136,12 @@ class InterpretableFA:
         self.orthogonal = {}
         self.embeddings = None
         self._scaler = 1
+        self._opt_seed = opt_seed
+        self._local_opt_tol_rel = local_opt_tol_rel
+        self._local_opt_tol_abs = local_opt_tol_abs
+        self._random_state = np.random.RandomState(opt_seed)
+
+        # Set values and further arg checks
         if self.is_corr_matrix:
             if sample_size is not None:
                 try:
@@ -191,13 +226,19 @@ class InterpretableFA:
 
     def _get_kmo(self):
         # This gets the KMO if data is a correlation matrix
+        # Note that this is used when the data supplied is in the form of a correlation matrix
 
+        # Arg checks
         if not self.is_corr_matrix:
             raise ValueError("the data must be a correlation matrix")
+
+        # Initialize values
         corr = self.data_.to_numpy(copy=True)
         pcorr = self._corr_to_pcorr(self.data_.to_numpy(copy=True))
         np.fill_diagonal(corr, 0)
         np.fill_diagonal(pcorr, 0)
+
+        # Calculate KMOs
         pcorr = pcorr ** 2
         corr = corr ** 2
         pcorr_sum = np.sum(pcorr, axis=0)
@@ -206,15 +247,22 @@ class InterpretableFA:
         corr_sum_total = np.sum(corr)
         pcorr_sum_total = np.sum(pcorr)
         kmo_total = corr_sum_total / (corr_sum_total + pcorr_sum_total)
+
         return kmo_items, kmo_total
 
     def _get_shpericity(self):
         # This performs the Bartlett's Test for Sphericity
+        # Note that this is used when the data supplied is in the form of a correlation matrix
 
+        # Arg checks
         if not self.is_corr_matrix:
             raise ValueError("the data must be a correlation matrix")
+
+        # Initialize values
         test_stat = None
         pval = None
+
+        # Perform test
         if self.sample_size is not None:
             corr = self.data_.to_numpy(copy=True)
             n = self.sample_size
@@ -223,6 +271,7 @@ class InterpretableFA:
             test_stat = -np.log(corr_det) * (n - 1 - (2 * p + 5) / 6)
             dof = p * (p - 1) / 2
             pval = chi2.sf(test_stat, dof)
+
         return test_stat, pval
 
     @staticmethod
@@ -247,6 +296,7 @@ class InterpretableFA:
             elements are either 0, 1, or `None`.
         """
 
+        # Arg checks
         if not isinstance(size, int):
             raise TypeError("size must be an integer")
         if size < 1:
@@ -260,6 +310,8 @@ class InterpretableFA:
             raise ValueError("the elements of groupings must be mutually exclusive")
         if not set(items) <= set(range(1, size + 1)):
             raise ValueError("groupings must partition [1, 2, ..., `size`] (or a subset of it)")
+
+        # Construct soft constraints matrix
         prior_matrix = np.zeros(shape=(size, size), dtype=object)
         for group in groupings:
             for pair in product(group, group):
@@ -270,6 +322,7 @@ class InterpretableFA:
             for _ in range(size):
                 prior_matrix[item - 1, _] = None
                 prior_matrix[_, item - 1] = None
+
         return prior_matrix
 
     @classmethod
@@ -278,6 +331,7 @@ class InterpretableFA:
         This loads the Universal Sentence Encoder.
         """
 
+        # This loads the Universal Sentence Encoder from Cer et al. (2018) into memory
         cls.use_model = hub.load(cls.use_url)
 
     def _calculate_semantic_similarity(self):
@@ -287,7 +341,10 @@ class InterpretableFA:
             self.embeddings = InterpretableFA.use_model(self.questions)
         dots = np.inner(self.embeddings, self.embeddings)
         for i in product(range(dots.shape[0]), range(dots.shape[0])):
+            # Absolute values may exceed 1 due to precision errors
+            # This clips the values to [-1, 1]
             dots[i[0], i[1]] = min(max(-1, dots[i[0], i[1]]), 1)
+
         return 1 - (1 / math.pi) * np.arccos(dots)
 
     def calculate_variable_factor_correlations(self, model_name):
@@ -307,14 +364,18 @@ class InterpretableFA:
             between the ith variable and the jth factor of the specified model.
         """
 
+        # Arg checks
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
+
+        # Calculate correlations
         model = self.models[model_name]
         if self.orthogonal[model_name]:
             variable_factor_correlations = model.loadings_
         else:
             variable_factor_correlations = np.matmul(model.loadings_, model.phi_)
         variable_factor_correlations = variable_factor_correlations / self._scaler
+
         return variable_factor_correlations
 
     def calculate_loading_similarity(self, model_name):
@@ -333,8 +394,11 @@ class InterpretableFA:
             The loading similarity matrix
         """
 
+        # Arg checks
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
+
+        # Calculate similarities
         correlations = self.calculate_variable_factor_correlations(model_name)
         num_of_vars = correlations.shape[0]
         loading_similarity = np.ones(shape=(num_of_vars, num_of_vars))
@@ -345,6 +409,7 @@ class InterpretableFA:
                 val = 1 - math.sqrt((1 / 2) * np.sum(((x_1 ** 2) - (x_2 ** 2)) ** 2))
                 loading_similarity[i, j] = val
                 loading_similarity[j, i] = val
+
         return loading_similarity
 
     def generate_multiset(self, model_name):
@@ -360,11 +425,16 @@ class InterpretableFA:
         Returns
         ----------
         multiset: list
-            The multiset, a list of ordered pairs (tuples).
+            The multiset, a list of ordered pairs (tuples). The first values are prior similarities.
+            The second values are the corresponding loading similarities.
         """
 
+        # Arg checks
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
+
+        # The first value in the ordered pair is the prior similarity
+        # The second value is the loading similarity
         num_of_vars = self.data_.shape[1]
         multiset = []
         loading_similarity = self.calculate_loading_similarity(model_name)
@@ -373,6 +443,7 @@ class InterpretableFA:
             for j in range(i):
                 if prior[i, j] is not None:
                     multiset.append((prior[i, j], loading_similarity[i, j]))
+
         return multiset
 
     def calculate_tau(self, model_name):
@@ -390,16 +461,22 @@ class InterpretableFA:
             The tau component of the V-index for the specified model.
         """
 
+        # Arg checks
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
+
+        # Initialize values
         multiset = self.generate_multiset(model_name)
         x = []
         y = []
         n = len(multiset)
+
+        # Separate the set of ordered pairs into two lists and then calculate
         for i in range(n):
             x.append(multiset[i][0])
             y.append(multiset[i][1])
         tau = (1 / 2) * (kendalltau(x, y, variant="b").statistic + 1)
+
         return tau
 
     def calculate_theta(self, model_name):
@@ -417,20 +494,27 @@ class InterpretableFA:
             The theta component of the V-index for the specified model.
         """
 
+        # Arg checks
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
+
+        # Initialize values
         multiset = self.generate_multiset(model_name)
         x = []
         y = []
         n = len(multiset)
+
+        # Separate the set of ordered pairs into two lists and then calculate
         for i in range(n):
             x.append(multiset[i][0])
             y.append(multiset[i][1])
+
         x = np.array(x)
         y = np.array(y)
         theta = n * np.sum(x * y) - np.sum(x) * np.sum(y)
         theta = theta / (n * np.sum(x ** 2) - (np.sum(x)) ** 2)
         theta = (1 / math.pi) * np.arctan(theta) + 1 / 2
+
         return theta
 
     def calculate_v_index(self, model_name):
@@ -448,22 +532,15 @@ class InterpretableFA:
             The V-index for the specified model.
         """
 
+        # Arg checks
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
-        multiset = self.generate_multiset(model_name)
-        x = []
-        y = []
-        n = len(multiset)
-        for i in range(n):
-            x.append(multiset[i][0])
-            y.append(multiset[i][1])
-        tau = (1 / 2) * (kendalltau(x, y, variant="b").statistic + 1)
-        x = np.array(x)
-        y = np.array(y)
-        theta = n * np.sum(x * y) - np.sum(x) * np.sum(y)
-        theta = theta / (n * np.sum(x ** 2) - (np.sum(x)) ** 2)
-        theta = (1 / math.pi) * np.arctan(theta) + 1 / 2
+
+        # Compute
+        theta = self.calculate_theta(model_name)
+        tau = self.calculate_tau(model_name)
         v_index = math.sqrt(tau * theta)
+
         return v_index
 
     def calculate_indices(self, model_name):
@@ -491,8 +568,11 @@ class InterpretableFA:
                 p-value (float), in that order, for the sufficiency test (`None` if calculations fail)
         """
 
+        # Arg checks
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
+
+        # Compute
         v = self.calculate_v_index(model_name)
         communalities = self.models[model_name].get_communalities().tolist()
         sphericity = self.sphericity
@@ -505,17 +585,21 @@ class InterpretableFA:
             "kmo": kmo,
             "sufficiency": None
         }
+
+        # Sufficiency is not supported if the data supplied is a correlation matrix
         if not self.is_corr_matrix:
             try:
                 result["sufficiency"] = self.models[model_name].sufficiency(self.data_.shape[0])
             except Exception as ex:
                 print(ex)
+
         return result
 
     @staticmethod
     def _get_rotation_matrix(x):
         # This gets the rotation matrix from the array x with (T^2 + T) / 2 elements, where T is the number of factors
 
+        # Convert the input into a skew-symmetrix matrix S and signature matrix D
         num_of_factors = int((-1 + math.sqrt(1 + 8 * len(x))) / 2)
         skew_symmetric_matrix = np.zeros(shape=(num_of_factors, num_of_factors))
         ind = 0
@@ -527,11 +611,14 @@ class InterpretableFA:
         diag_matrix = np.zeros(shape=(num_of_factors, num_of_factors))
         for ind_ in range(ind, len(x)):
             diag_matrix[ind_ - ind, ind_ - ind] = x[ind_]
+
+        # The orthogonal rotation matrix is ((I - S)(I + S)^(-1))D
         identity_matrix = np.identity(num_of_factors)
         i_minus_s = identity_matrix - skew_symmetric_matrix
         i_plus_s = identity_matrix + skew_symmetric_matrix
         i_s_product = np.matmul(i_minus_s, np.linalg.inv(i_plus_s))
         rotation_matrix = np.matmul(i_s_product, diag_matrix)
+
         return rotation_matrix
 
     def _get_rotated_loadings(self, x, unrotated_loadings):
@@ -539,11 +626,13 @@ class InterpretableFA:
 
         rotation_matrix = self._get_rotation_matrix(x)
         loadings = np.matmul(unrotated_loadings, rotation_matrix)
+
         return loadings
 
     def _get_v(self, x, grad, unrotated_loadings, model=None):
         # This gets the V-index
 
+        # Get the prior similarities (a) and the loading similarities (b)
         if model is None:
             loadings = self._get_rotated_loadings(x, unrotated_loadings)
         else:
@@ -560,6 +649,8 @@ class InterpretableFA:
                     x_1 = correlations[i, :]
                     x_2 = correlations[j, :]
                     b.append(1 - math.sqrt((1 / 2) * np.sum(((x_1 ** 2) - (x_2 ** 2)) ** 2)))
+
+        # Compute
         n = len(a)
         tau = (1 / 2) * (kendalltau(a, b, variant="b").statistic + 1)
         a = np.array(a)
@@ -568,6 +659,7 @@ class InterpretableFA:
         theta = theta / (n * np.sum(a ** 2) - (np.sum(a)) ** 2)
         theta = (1 / math.pi) * np.arctan(theta) + 1 / 2
         v = math.sqrt(tau * theta)
+
         return v
 
     @staticmethod
@@ -582,55 +674,104 @@ class InterpretableFA:
     def _get_best_predefined(self, num_factors):
         # This gets the best rotation (in terms of the interpretability index) among the pre-defined rotations
 
+        # Initialize values
         models = []
         indices = []
         rot_names = []
+
+        # Fit all available orthogonal rotations (except priorimax)
         for rot in np.setdiff1d(ORTHOGONAL_ROTATIONS, ["priorimax"]):
             temp_model = FactorAnalyzer(n_factors=num_factors, rotation=rot, is_corr_matrix=self.is_corr_matrix)
             temp_model.fit(self.data_)
             models.append(temp_model)
             rot_names.append(rot)
             indices.append(self._get_v(None, None, None, models[-1]))
+
+        # Return the model with the best index value
         return [models[indices.index(max(indices))], max(indices), rot_names[indices.index(max(indices))]]
 
-    def _rotate_factors(self, model_name, max_time=300.0, opt_seed=123):
+    def _rotate_factors(self, model_name, is_global=False, random_starts=1, max_time=300.0):
         # This implements the priorimax rotation
 
-        if model_name not in self.models.keys():
-            raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
-        try:
-            max_time = float(max_time)
-        except ValueError:
-            raise TypeError("max_time must be a float or coercible to float")
-        try:
-            opt_seed = int(opt_seed)
-        except ValueError:
-            raise TypeError("opt_seed must be an int or coercible to int")
-        none_ind = self.calculate_v_index(model_name)
+        print(f"Performing the priorimax rotation using {'global' if is_global else 'local'} optimization "
+              f"with {'maximum run time of' if is_global else random_starts} {max_time if is_global else 
+              'random start(s)...'} {'second(s)...' if is_global else ''}")
 
+        # Initialize values
+        none_ind = self.calculate_v_index(model_name)
         opt_ind = -1
         pre_mod, pre_ind, pre_name = self._get_best_predefined(self.models[model_name].loadings_.shape[1])
         unrotated_loadings = self.models[model_name].loadings_.copy()
-        if max_time > 0:
-            num_of_factors = unrotated_loadings.shape[1]
-            num_of_skew_vars = int((num_of_factors * (num_of_factors - 1)) / 2)
-            num_of_diag_vars = int(num_of_factors)
-            num_of_mat_vars = num_of_skew_vars + num_of_diag_vars
-            nlopt.srand(opt_seed)
-            opt = nlopt.opt(nlopt.GN_ISRES, int(num_of_mat_vars))
-            opt.set_maxtime(max_time)
-            opt.set_population(200 * num_of_mat_vars)
-            opt.set_lower_bounds(np.array([-1] * num_of_mat_vars))
-            opt.set_upper_bounds(np.array([1] * num_of_mat_vars))
-            opt.set_max_objective(lambda x, grad: self._get_v(x, grad, unrotated_loadings))
-            for i in range(num_of_diag_vars):
-                opt.add_equality_constraint(self._generate_constraint(num_of_skew_vars + i))
-            results = opt.optimize(np.append(np.zeros(num_of_skew_vars), np.ones(num_of_diag_vars)))
-            rotation_matrix = self._get_rotation_matrix(results)
-            rotated_loadings = self._get_rotated_loadings(results, unrotated_loadings)
-            self.models[model_name].loadings_ = rotated_loadings
-            self.models[model_name].rotation_matrix_ = rotation_matrix
+
+        # Initialize the optimizer
+        num_of_factors = unrotated_loadings.shape[1]
+        num_of_skew_vars = int((num_of_factors * (num_of_factors - 1)) / 2)
+        num_of_diag_vars = int(num_of_factors)
+        num_of_mat_vars = num_of_skew_vars + num_of_diag_vars
+        algo_used = nlopt.GN_ISRES if is_global else nlopt.LN_COBYLA
+        opt = nlopt.opt(algo_used, int(num_of_mat_vars))
+
+        # Set the objective function for optimization
+        opt.set_max_objective(lambda x, grad: self._get_v(x, grad, unrotated_loadings))
+
+        # Set constraints for optimization
+        opt.set_lower_bounds(np.array([-1] * num_of_mat_vars))
+        opt.set_upper_bounds(np.array([1] * num_of_mat_vars))
+        for i in range(num_of_diag_vars):
+            opt.add_equality_constraint(self._generate_constraint(num_of_skew_vars + i))
+
+        # Run optimizer
+        results = None
+        if is_global:
+            if max_time > 0:
+                # Set additional optimizer parameters
+                nlopt.srand(self._opt_seed)
+                opt.set_population(200 * num_of_mat_vars)
+                opt.set_maxtime(max_time)
+
+                # Compute
+                results = opt.optimize(np.append(np.zeros(num_of_skew_vars), np.ones(num_of_diag_vars)))
+        else:
+            # Set additional optimizer parameters
+            opt.set_maxtime(-1)
+            opt.set_ftol_rel(self._local_opt_tol_rel)
+            opt.set_ftol_abs(self._local_opt_tol_abs)
+
+            # Perform local optimization(s)
+            max_ind = -1
+            for i in range(random_starts):
+                # Get a random draw from the Haar distribution
+                if i > 0:
+                    skew = self._random_state.uniform(-1, 1, num_of_skew_vars)
+                    sig = self._random_state.choice([-1, 1], num_of_diag_vars)
+                else:
+                    skew = np.zeros(num_of_skew_vars)
+                    sig = np.ones(num_of_diag_vars)
+
+                # Perform the optimization
+                temp_results = None
+                try:
+                    temp_results = opt.optimize(np.append(skew, sig))
+                except nlopt.RoundoffLimited:
+                    warnings.warn(f"Random start {i} encountered limitations due to roundoff errors. It will be "
+                                  f"skipped. Try increasing the tolerance values.", RuntimeWarning)
+                    pass
+                if temp_results is not None:
+                    self.models[model_name].loadings_ = self._get_rotated_loadings(temp_results, unrotated_loadings)
+                    self.models[model_name].rotation_matrix_ = self._get_rotation_matrix(temp_results)
+                    temp_opt_ind = self.calculate_v_index(model_name)
+                    if temp_opt_ind > max_ind:
+                        results = temp_results
+                        max_ind = temp_opt_ind
+
+        # Extract "manual" optimization results, if present
+        if results is not None:
+            self.models[model_name].loadings_ = self._get_rotated_loadings(results, unrotated_loadings)
+            self.models[model_name].rotation_matrix_ = self._get_rotation_matrix(results)
             opt_ind = self.calculate_v_index(model_name)
+
+        # Decide on the best rotation matrix
+        # 0 - unrotated loadings, 1 - a pre-defined rotation, 2 - manual priorimax rotation from optimization
         inds = [none_ind, pre_ind, opt_ind]
         best = inds.index(max(inds))
         if best == 0:
@@ -645,9 +786,9 @@ class InterpretableFA:
             print(f"[{model_name}] The best rotation found (priorimax) is "
                   f"\n{self.models[model_name].rotation_matrix_}.")
 
-    def fit_factor_model(self, model_name, n_factors=3, rotation="priorimax", max_time=300.0, opt_seed=1,
-                         method="minres", use_smc=True, bounds=(0.005, 1), impute="median", svd_method="randomized",
-                         rotation_kwargs=None):
+    def fit_factor_model(self, model_name, n_factors=3, rotation="priorimax", is_global=False, random_starts=1,
+                         max_time=300.0, method="minres", use_smc=True, bounds=(0.005, 1), impute="median",
+                         svd_method="randomized", rotation_kwargs=None):
         """
         This fits the factor model (and saves it in `self.models`). This extends
         `factor_analyzer.factor_analyzer.FactorAnalyzer` from the factor_analyzer package to include
@@ -675,14 +816,20 @@ class InterpretableFA:
             Defaults to 'priorimax'. Note that if `rotation` is 'priorimax', the model is fit without
             rotation first with `factor_analyzer.factor_analyzer.FactorAnalyzer`. Then, `loadings_` and
             `rotation_matrix_` are updated with the new matrices (and these are the only attributes that are updated).
+        is_global: bool, optional
+            If this is `True`, then the problem of finding the priorimax rotation will be treated as a global
+            optimization problem. Otherwise, local optimization is used. Note that this is ignored if the priorimax
+            rotation is not used. The default value is `False`.
+        random_starts: int, optional
+            This is the number of random starts (i.e., number of local optimizations) used for finding the priorimax
+            rotation, if `is_global` is `False`. The default value is 1. This is ignored when `rotation` is not
+            `priorimax`.
         max_time: float, optional
-            If `rotation` is either 'priorimax', this is the maximum time in seconds for which the
-            optimizer will run to find the rotation matrix. If `max_time` is 0 or negative, then the pre-defined
-            orthogonal rotation (e.g., varimax, equamax, etc.) with the best index value is selected (i.e., the
-            priorimax procedure is performed on the set of pre-defined orthogonal rotations). The
-            default value is 300.0 (i.e., 5 minutes). This is ignored when `rotation` is not 'priorimax'.
-        opt_seed: int, optional
-            This is the seed used for the optimizer (ISRES). The default value is 1.
+            This is the maximum amount of time in seconds for which the optimizer will run to find the priorimax
+            rotation, if `is_global` is `True` (otherwise, it is ignored). If `max_time` is 0 or negative,
+            then the pre-defined orthogonal rotation (e.g., varimax, equamax, etc.) with the best index value is
+            selected (i.e., the priorimax procedure is performed on the set of pre-defined orthogonal rotations).
+            The default value is 300.0 (i.e., 5 minutes). This is ignored when `rotation` is not 'priorimax'.
         method : {'minres', 'ml', 'principal'}, optional
             The `method` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is 'minres'.
         use_smc : bool, optional
@@ -705,12 +852,23 @@ class InterpretableFA:
             The model fitted.
         """
 
+        # Arg checks
         if rotation not in POSSIBLE_ROTATIONS and rotation is not None:
             raise ValueError(f"rotation must be one of: {POSSIBLE_ROTATIONS}")
+        if not isinstance(is_global, bool):
+            raise TypeError("is_global must be bool")
         try:
             max_time = float(max_time)
         except ValueError:
             raise TypeError("max_time must be a float or coercible to float")
+        try:
+            random_starts = int(random_starts)
+        except ValueError:
+            raise TypeError("random_starts must be an int or coercible to int")
+        if random_starts < 1:
+            raise ValueError("random_starts must be at least 1")
+
+        # Fit the factor model
         self.orthogonal[model_name] = rotation is None or rotation in ORTHOGONAL_ROTATIONS
         if rotation == "priorimax":
             special_rotation = rotation
@@ -722,8 +880,9 @@ class InterpretableFA:
         fa.fit(self.data_)
         self.models[model_name] = fa
         if special_rotation != "none":
-            self._rotate_factors(model_name, max_time, opt_seed)
+            self._rotate_factors(model_name, is_global, random_starts, max_time)
         model = self.models[model_name]
+
         return model
 
     def summarize_model(self, model_name, loadings_and_scores=True):
@@ -748,8 +907,11 @@ class InterpretableFA:
                 3) `scores`: the estimated factor scores
         """
 
+        # Arg checks
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
+
+        # Calculate indices
         summary = self.calculate_indices(model_name)
         variable_factor = self.calculate_variable_factor_correlations(model_name)
         loadings = self.models[model_name].loadings_
@@ -758,6 +920,7 @@ class InterpretableFA:
         if loadings_and_scores is True:
             summary["loadings"] = loadings
             summary["scores"] = scores
+
         return summary
 
     def analyze_model(self, model_name, sorted_=True):
@@ -779,8 +942,11 @@ class InterpretableFA:
             per-variable KMO scores
         """
 
+        # Arg checks
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
+
+        # Calculate values
         model = self.models[model_name]
         analysis = {
             "variable": self.data_.columns.values.tolist()
@@ -794,6 +960,7 @@ class InterpretableFA:
         if sorted_:
             temp = analysis.drop(["variable", "communality", "kmo_msa"], axis=1)
             analysis = analysis.reindex(temp.max(1).sort_values(ascending=False).index)
+
         return analysis
 
     def remove_factor_model(self, model_name):
@@ -810,8 +977,10 @@ class InterpretableFA:
         None
         """
 
+        # Arg checks
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
+
         del self.models[model_name]
         del self.orthogonal[model_name]
 
@@ -834,6 +1003,7 @@ class InterpretableFA:
             index value to the lowest index value. The selected model is the first element of the list.
         """
 
+        # Arg checks
         if models == "all":
             models = self.models
         elif not (isinstance(models, list) and set(models).issubset(self.models.keys())):
@@ -841,12 +1011,15 @@ class InterpretableFA:
                              f"or a list that is a subset of {list(self.models.keys())}")
         else:
             raise TypeError("models must be either a list or 'all'")
-        results = []
         if len(models) == 0:
             raise ValueError("list cannot have a length of 0")
+
+        # Find the best model
+        results = []
         for model in models:
             results.append(self.summarize_model(model))
         results = sorted(results, key=lambda x: x["v_index"])
+
         return results
 
     def interp_plot(self, model_name, title=None, w=10, h=6):
@@ -865,18 +1038,20 @@ class InterpretableFA:
             The title of the plot. If `None`, a default title will be used.
         """
 
+        # Arg checks
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
 
+        # Get prior and loading similarities
         multiset = self.generate_multiset(model_name)
         x = [item[0] for item in multiset]
         y = [item[1] for item in multiset]
-
         df = pd.DataFrame({
             'Prior Information': x,
             'Loading Similarity': y
         })
 
+        # Create plot
         plt.figure(figsize=(w, h))
         sns.regplot(data=df, x='Prior Information', y='Loading Similarity', lowess=True,
                     scatter_kws={'alpha': 0.5, 'edgecolor': 'w'}, line_kws={'color': 'red'})
@@ -907,29 +1082,31 @@ class InterpretableFA:
             obj:`matplotlib.colors.Colormap`. If `None`, a default colormap will be used.
         """
 
+        # Arg checks
         if model_name not in self.models.keys():
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
 
+        # Get correlations
         corr_mat = self.calculate_variable_factor_correlations(model_name)
 
         df_corr = pd.DataFrame(corr_mat, columns=[f'Factor {i + 1}' for i in range(corr_mat.shape[1])],
                                index=self.data_.columns)
-
         if sorted_:
             sorted_index = df_corr.abs().max(axis=1).sort_values(ascending=False).index
             df_corr = df_corr.loc[sorted_index]
 
+        # Get colors
         if cmap is None:
             cmap = mcolors.LinearSegmentedColormap.from_list(
-                'default_cmap', ['darkred', 'red', 'orange', 'white', 'lightblue', 'blue', 'darkblue'],
+                'default_cmap',
+                ['darkred', 'red', 'orange', 'white', 'lightblue', 'blue', 'darkblue'],
                 N=1024
             )
         elif isinstance(cmap, str):
-            # Use a predefined colormap if the input is a string
             if cmap not in plt.colormaps():
                 raise ValueError(f"Predefined colormap '{cmap}' is not available.")
-            cmap = plt.get_cmap(cmap)
 
+        # Create plot
         plt.figure(figsize=(w, h))
         sns.heatmap(df_corr, cmap=cmap, center=0, annot=True, fmt='.2f', linewidths=0.5)
         plt.title(title or f'Variable-Factor Correlation Heatmap - Model: {model_name}')
