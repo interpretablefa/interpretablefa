@@ -13,30 +13,24 @@ For instance, suppose that `data` contains the dataset, `q` contains the questio
 import pandas as pd
 from interpretablefa import InterpretableFA
 
-# load the dataset and the questions
-data = pd.read_csv("./data/ECR_data.csv")
+# Load the dataset and the questions
+data = pd.read_csv("./data/ECR_data_clean.csv")
 with open("./data/ECR_questions.txt") as questions_file:
     q = questions_file.read().split("\n")
     questions_file.close()
 
-# define a partial soft constraints matrix
-g = [[1, 7, 9, 11, 13, 17, 23], [6, 10, 12], [14, 16, 26, 36], [20, 28, 32, 34]]
-p = InterpretableFA.generate_grouper_prior(len(q), g)
+# Initialize the analyzer
+analyzer = InterpretableFA(data, "semantics", q)
 
-# fit the factor model
-## since a soft constraints matrix p is supplied, q will be ignored
-## to use the semantic similarity matrix based on q, set p = None
-analyzer = InterpretableFA(data, p, q)
-analyzer.fit_factor_model("model", 4, "priorimax", 43200.0)
+# Fit the 4-factor model with the priorimax rotation
+analyzer.fit_factor_model("model", 4, "priorimax")
 
-# get the results
-print(analyzer.models["model"].rotation_matrix_)
+# Get the results
 print(analyzer.calculate_indices("model")["v_index"])
+print(analyzer.models["model"].rotation_matrix_)
 
-# visualize the results
-## get the variable-factor correlations heatmap
+# Visualize the results
 analyzer.var_factor_corr_plot("model")
-## get the agreement plot
 analyzer.interp_plot("model")
 
 ```
