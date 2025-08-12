@@ -49,17 +49,15 @@ class InterpretableFA:
     data_: :obj: `pandas.core.frame.DataFrame`
         The data to be used for fitting factor models. Can be either the raw data or the correlation matrix.
     prior: :obj: `numpy.ndarray` or `None`
-        If `prior` is `None`, then the prior is generated using pairwise semantic similarities from the Universal
-        Sentence Encoder. If `prior` is of class `numpy.ndarray`, it must be a 2D array (i.e., its shape must be an
-        ordered pair).
+        If `prior` is `"semantics"`, then the prior (i.e., soft constraints matrix) is generated using pairwise
+        semantic similarities of `questions` from the Universal Sentence Encoder. If `prior` is of class
+        `numpy.ndarray`, it must be a 2D array (i.e., its shape must be an ordered pair).
     questions: list of str, optional
         The questions associated with each variable. It is assumed that the order of the questions correspond to the
         order of the columns in `data_`. For example, the first element in `questions` correspond to the first column
-        of `data_`. If `prior` is not `None`, this is ignored.
+        of `data_`. If `prior` is not `"semantics"`, this is ignored.
     is_corr_matrix: bool, optional
-        `True` if the data supplied is a correlation matrix and `False` otherwise. Defaults to `True`. Note that if
-        the correlation matrix is supplied, the KMO values, sphericity test result, and estimated factor scores are not
-        provided.
+        `True` if the data supplied is a correlation matrix and `False` otherwise. Defaults to `True`.
     sample_size: int, optional
         The sample size or `None`, if `is_corr_matrix` is `True`. Otherwise, this is ignored and is set to the number
         of rows in `data_`.
@@ -80,7 +78,7 @@ class InterpretableFA:
         `True` if the data is a correlation matrix and `False` otherwise.
     sample_size: int
         The sample size
-    prior: :obj: `numpy.ndarray` or `None`
+    prior: :obj: `numpy.ndarray` or `semantics`
         The prior used for calculating the interpretability index and for the performing priorimax rotation.
     models: dict
         The dictionary containing the saved or fitted models, where the keys are the model names and the values are
@@ -106,8 +104,8 @@ class InterpretableFA:
         """
         Initializes the InterpretableFA object. Note that the first time `InterpretableFA.__init__` is called with
         `prior` set to `None`, the class method `InterpretableFA.load_use_model` is run to load the Universal
-        Sentence Encoder. If `prior` is not `None` or `InterpretableFA.load_use_model` has already been called (i.e.,
-        `InterpretableFA.use_model` is not `None`), `InterpretableFA.load_use_model` will not be called anymore.
+        Sentence Encoder. If `prior` is not `"semantics"` or `InterpretableFA.load_use_model` has already been called
+        (i.e., `InterpretableFA.use_model` is not `None`), `InterpretableFA.load_use_model` will not be called anymore.
         """
 
         # Initial arg checks
@@ -799,7 +797,7 @@ class InterpretableFA:
         model_name: str
             The name of the model.
         n_factors: int, optional
-            The `n_factors` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is 3.
+            The `n_factors` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is `3`.
         rotation: str, optional
             The type of rotation to perform after fitting the factor model. If set to `None`, no rotation will be
             performed. Possible values include:
@@ -813,7 +811,7 @@ class InterpretableFA:
                 g) quartimax (orthogonal rotation)
                 h) equamax (orthogonal rotation)
 
-            Defaults to 'priorimax'. Note that if `rotation` is 'priorimax', the model is fit without
+            Defaults to '"priorimax"'. Note that if `rotation` is '"priorimax"', the model is fit without
             rotation first with `factor_analyzer.factor_analyzer.FactorAnalyzer`. Then, `loadings_` and
             `rotation_matrix_` are updated with the new matrices (and these are the only attributes that are updated).
         is_global: bool, optional
@@ -823,25 +821,25 @@ class InterpretableFA:
         random_starts: int, optional
             This is the number of random starts (i.e., number of local optimizations) used for finding the priorimax
             rotation, if `is_global` is `False`. The default value is 1. This is ignored when `rotation` is not
-            `priorimax`.
+            `"priorimax"`.
         max_time: float, optional
             This is the maximum amount of time in seconds for which the optimizer will run to find the priorimax
             rotation, if `is_global` is `True` (otherwise, it is ignored). If `max_time` is 0 or negative,
             then the pre-defined orthogonal rotation (e.g., varimax, equamax, etc.) with the best index value is
             selected (i.e., the priorimax procedure is performed on the set of pre-defined orthogonal rotations).
-            The default value is 300.0 (i.e., 5 minutes). This is ignored when `rotation` is not 'priorimax'.
+            The default value is `300.0` (i.e., 5 minutes). This is ignored when `rotation` is not '"priorimax"'.
         method : {'minres', 'ml', 'principal'}, optional
-            The `method` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is 'minres'.
+            The `method` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is '"minres"'.
         use_smc : bool, optional
             The `use_smc` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is `True`.
         bounds : tuple, optional
             The `bounds` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is the
             tuple `(0.005, 1)`.
         impute : {'drop', 'mean', 'median'}, optional
-            The `impute` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is 'median'.
+            The `impute` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is '"median"'.
         svd_method : {‘lapack’, ‘randomized’}
             The `svd_method` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is
-            'randomized'.
+            '"randomized"'.
         rotation_kwargs: optional
             The `rotation_kwargs` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is
             `None`.
@@ -991,10 +989,10 @@ class InterpretableFA:
 
         Parameters
         ----------
-        models: 'all' or list
-            If the value is 'all', then the procedure is performed on`self.models`. The value can also be a
+        models: '"all"' or list
+            If the value is '"all"', then the procedure is performed on`self.models`. The value can also be a
             list of the model names and if so, the procedure will be performed on the specified models. Defaults to
-            'all'.
+            '"all"'.
 
         Returns
         ----------
