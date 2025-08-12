@@ -177,7 +177,7 @@ class InterpretableFA:
             self.kmo = calculate_kmo(self.data_)
             self.sphericity = calculate_bartlett_sphericity(self.data_)
             self.sample_size = self.data_.shape[0]
-        if prior != "semantics":
+        if prior == "semantics":
             if not (bool(questions) and isinstance(questions, list) and
                     all(isinstance(question, str) for question in questions)):
                 raise TypeError("questions must be a list of strings")
