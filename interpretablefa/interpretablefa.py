@@ -78,7 +78,7 @@ class InterpretableFA:
         `True` if the data is a correlation matrix and `False` otherwise.
     sample_size: int
         The sample size
-    prior: :obj: `numpy.ndarray` or `semantics`
+    prior: :obj: `numpy.ndarray` or `"semantics"`
         The prior used for calculating the interpretability index and for the performing priorimax rotation.
     models: dict
         The dictionary containing the saved or fitted models, where the keys are the model names and the values are
@@ -177,7 +177,7 @@ class InterpretableFA:
             self.kmo = calculate_kmo(self.data_)
             self.sphericity = calculate_bartlett_sphericity(self.data_)
             self.sample_size = self.data_.shape[0]
-        if prior is None:
+        if prior != "semantics":
             if not (bool(questions) and isinstance(questions, list) and
                     all(isinstance(question, str) for question in questions)):
                 raise TypeError("questions must be a list of strings")
@@ -212,7 +212,7 @@ class InterpretableFA:
                         raise TypeError("values in prior must either be a float, coercible to float, or None")
             self.prior = prior
         else:
-            raise TypeError("prior must be a 2D numpy array or None")
+            raise TypeError("prior must be a 2D numpy array or 'semantics'")
 
     @staticmethod
     def _corr_to_pcorr(corr_mat):
