@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v4.0.0
+# interpretablefa v4.0.1
 # https://pypi.org/project/interpretablefa/
 
 import math
@@ -291,6 +291,7 @@ class PriorimaxRotator:
                     if temp_result.success:
                         if abs(temp_result.fun) > max_ind:
                             result = temp_result
+                            max_ind = abs(temp_result.fun)
                     else:
                         warnings.warn(f"Random start {i} failed to converge. It will be skipped.", RuntimeWarning)
 
