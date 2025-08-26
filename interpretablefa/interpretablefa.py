@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v3.0.0
+# interpretablefa v3.0.1
 # https://pypi.org/project/interpretablefa/
 
 import math
@@ -177,17 +177,7 @@ class InterpretableFA:
             self.kmo = calculate_kmo(self.data_)
             self.sphericity = calculate_bartlett_sphericity(self.data_)
             self.sample_size = self.data_.shape[0]
-        if prior == "semantics":
-            if not (bool(questions) and isinstance(questions, list) and
-                    all(isinstance(question, str) for question in questions)):
-                raise TypeError("questions must be a list of strings")
-            if data_.shape[1] != len(questions):
-                raise ValueError("the length of questions must match the number of columns in data")
-            self.questions = questions
-            if InterpretableFA.use_model is None:
-                InterpretableFA.load_use_model()
-            self.prior = self._calculate_semantic_similarity()
-        elif isinstance(prior, np.ndarray):
+        if isinstance(prior, np.ndarray):
             self.questions = []
             if len(prior.shape) != 2:
                 raise ValueError("the shape of prior must be 2")
@@ -211,6 +201,16 @@ class InterpretableFA:
                     except ValueError:
                         raise TypeError("values in prior must either be a float, coercible to float, or None")
             self.prior = prior
+        elif prior == "semantics":
+            if not (bool(questions) and isinstance(questions, list) and
+                    all(isinstance(question, str) for question in questions)):
+                raise TypeError("questions must be a list of strings")
+            if data_.shape[1] != len(questions):
+                raise ValueError("the length of questions must match the number of columns in data")
+            self.questions = questions
+            if InterpretableFA.use_model is None:
+                InterpretableFA.load_use_model()
+            self.prior = self._calculate_semantic_similarity()
         else:
             raise TypeError("prior must be a 2D numpy array or 'semantics'")
 
@@ -310,10 +310,10 @@ class InterpretableFA:
             raise ValueError("groupings must partition [1, 2, ..., `size`] (or a subset of it)")
 
         # Construct soft constraints matrix
-        prior_matrix = np.zeros(shape=(size, size), dtype=object)
+        prior_matrix = np.zeros(shape=(size, size), dtype=float)
         for group in groupings:
             for pair in product(group, group):
-                prior_matrix[pair[0] - 1, pair[1] - 1] = 1
+                prior_matrix[pair[0] - 1, pair[1] - 1] = 1.0
         whole_set = list(range(1, size + 1))
         not_present = [item for item in whole_set if item not in items]
         for item in not_present:
@@ -371,7 +371,7 @@ class InterpretableFA:
         if self.orthogonal[model_name]:
             variable_factor_correlations = model.loadings_
         else:
-            variable_factor_correlations = np.matmul(model.loadings_, model.phi_)
+            variable_factor_correlations = model.loadings_ @ model.phi_
         variable_factor_correlations = variable_factor_correlations / self._scaler
 
         return variable_factor_correlations
@@ -614,8 +614,8 @@ class InterpretableFA:
         identity_matrix = np.identity(num_of_factors)
         i_minus_s = identity_matrix - skew_symmetric_matrix
         i_plus_s = identity_matrix + skew_symmetric_matrix
-        i_s_product = np.matmul(i_minus_s, np.linalg.inv(i_plus_s))
-        rotation_matrix = np.matmul(i_s_product, diag_matrix)
+        i_s_product = i_minus_s @ np.linalg.inv(i_plus_s)
+        rotation_matrix = i_s_product @ diag_matrix
 
         return rotation_matrix
 
@@ -623,7 +623,7 @@ class InterpretableFA:
         # This gets the rotated loadings
 
         rotation_matrix = self._get_rotation_matrix(x)
-        loadings = np.matmul(unrotated_loadings, rotation_matrix)
+        loadings = unrotated_loadings @ rotation_matrix
 
         return loadings
 
@@ -720,47 +720,46 @@ class InterpretableFA:
 
         # Run optimizer
         results = None
-        if is_global:
-            if max_time > 0:
+        opt.set_maxtime(max_time)
+        if max_time > 0:
+            if is_global:
                 # Set additional optimizer parameters
                 nlopt.srand(self._opt_seed)
                 opt.set_population(200 * num_of_mat_vars)
-                opt.set_maxtime(max_time)
 
                 # Compute
                 results = opt.optimize(np.append(np.zeros(num_of_skew_vars), np.ones(num_of_diag_vars)))
-        else:
-            # Set additional optimizer parameters
-            opt.set_maxtime(-1)
-            opt.set_ftol_rel(self._local_opt_tol_rel)
-            opt.set_ftol_abs(self._local_opt_tol_abs)
+            else:
+                # Set additional optimizer parameters
+                opt.set_ftol_rel(self._local_opt_tol_rel)
+                opt.set_ftol_abs(self._local_opt_tol_abs)
 
-            # Perform local optimization(s)
-            max_ind = -1
-            for i in range(random_starts):
-                # Get a random draw from the Haar distribution
-                if i > 0:
-                    skew = self._random_state.uniform(-1, 1, num_of_skew_vars)
-                    sig = self._random_state.choice([-1, 1], num_of_diag_vars)
-                else:
-                    skew = np.zeros(num_of_skew_vars)
-                    sig = np.ones(num_of_diag_vars)
+                # Perform local optimization(s)
+                max_ind = -1
+                for i in range(random_starts):
+                    # Get a random draw from the Haar distribution
+                    if i > 0:
+                        skew = self._random_state.uniform(-1, 1, num_of_skew_vars)
+                        sig = self._random_state.choice([-1, 1], num_of_diag_vars)
+                    else:
+                        skew = np.zeros(num_of_skew_vars)
+                        sig = np.ones(num_of_diag_vars)
 
-                # Perform the optimization
-                temp_results = None
-                try:
-                    temp_results = opt.optimize(np.append(skew, sig))
-                except nlopt.RoundoffLimited:
-                    warnings.warn(f"Random start {i} encountered limitations due to roundoff errors. It will be "
-                                  f"skipped. Try increasing the tolerance values.", RuntimeWarning)
-                    pass
-                if temp_results is not None:
-                    self.models[model_name].loadings_ = self._get_rotated_loadings(temp_results, unrotated_loadings)
-                    self.models[model_name].rotation_matrix_ = self._get_rotation_matrix(temp_results)
-                    temp_opt_ind = self.calculate_v_index(model_name)
-                    if temp_opt_ind > max_ind:
-                        results = temp_results
-                        max_ind = temp_opt_ind
+                    # Perform the optimization
+                    temp_results = None
+                    try:
+                        temp_results = opt.optimize(np.append(skew, sig))
+                    except nlopt.RoundoffLimited:
+                        warnings.warn(f"Random start {i} encountered limitations due to roundoff errors. "
+                                      f"It will be skipped. Try increasing the tolerance values.", RuntimeWarning)
+                        pass
+                    if temp_results is not None:
+                        self.models[model_name].loadings_ = self._get_rotated_loadings(temp_results, unrotated_loadings)
+                        self.models[model_name].rotation_matrix_ = self._get_rotation_matrix(temp_results)
+                        temp_opt_ind = self.calculate_v_index(model_name)
+                        if temp_opt_ind > max_ind:
+                            results = temp_results
+                            max_ind = temp_opt_ind
 
         # Extract "manual" optimization results, if present
         if results is not None:
@@ -820,14 +819,15 @@ class InterpretableFA:
             rotation is not used. The default value is `False`.
         random_starts: int, optional
             This is the number of random starts (i.e., number of local optimizations) used for finding the priorimax
-            rotation, if `is_global` is `False`. The default value is 1. This is ignored when `rotation` is not
-            `"priorimax"`.
+            rotation, if `is_global` is `False`. The default value is 1. Note that the first start is always taken to
+            be the identity matrix, so that the starts are the identity matrix and (random_starts - 1) random rotation
+            matrices. This is ignored when `rotation` is not `"priorimax"`.
         max_time: float, optional
             This is the maximum amount of time in seconds for which the optimizer will run to find the priorimax
-            rotation, if `is_global` is `True` (otherwise, it is ignored). If `max_time` is 0 or negative,
-            then the pre-defined orthogonal rotation (e.g., varimax, equamax, etc.) with the best index value is
-            selected (i.e., the priorimax procedure is performed on the set of pre-defined orthogonal rotations).
-            The default value is `300.0` (i.e., 5 minutes). This is ignored when `rotation` is not '"priorimax"'.
+            rotation. If `max_time` is 0 or negative, then the pre-defined orthogonal rotation (e.g., varimax,
+            equamax, etc.) with the best index value is selected (i.e., the priorimax procedure is performed on the
+            set of pre-defined orthogonal rotations). The default value is `300.0` (i.e., 5 minutes). This is
+            ignored when `rotation` is not '"priorimax"'.
         method : {'minres', 'ml', 'principal'}, optional
             The `method` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is '"minres"'.
         use_smc : bool, optional
