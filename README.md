@@ -1,6 +1,6 @@
 # The `interpretablefa` package
 ## Overview
-This is a package for performing interpretable factor analysis. This implements the priorimax rotation, including the associated interpretability index and plot, that are described [here](https://arxiv.org/abs/2409.11525).
+This is a package, which is available on the [Python Package Index](https://pypi.org/project/interpretablefa/), for performing interpretable factor analysis. This implements the priorimax rotation, including the associated interpretability index and plot, that are described [here](https://arxiv.org/abs/2409.11525).
 
 It also contains several helper and visualization functions and wraps several functions from the `factor_analyzer` package.
 
@@ -42,7 +42,6 @@ analyzer.interp_plot("model")
 * `factor_analyzer`
 * `tensorflow_hub`
 * `scipy`
-* `nlopt`
 * `seaborn`
 * `matplotlib`
 * `statsmodels`
