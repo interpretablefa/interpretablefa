@@ -10,28 +10,336 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v3.0.1
+# interpretablefa v4.0.0
 # https://pypi.org/project/interpretablefa/
 
 import math
+import time
+import warnings
 import numpy as np
 import pandas as pd
 from factor_analyzer import FactorAnalyzer, calculate_kmo, calculate_bartlett_sphericity, covariance_to_correlation
 import tensorflow_hub as hub
 from scipy.stats import kendalltau, chi2
-import nlopt
+from scipy.optimize import shgo, minimize, NonlinearConstraint
 from itertools import product
-import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import warnings
+import seaborn as sns
+
 
 ORTHOGONAL_ROTATIONS = ["priorimax", "varimax", "oblimax", "quartimax", "equamax"]
 OBLIQUE_ROTATIONS = ["promax", "oblimin", "quartimin"]
 POSSIBLE_ROTATIONS = ORTHOGONAL_ROTATIONS + OBLIQUE_ROTATIONS
 OPT_SEED = 123
-LOCAL_OPT_TOL_REL = 1e-8
-LOCAL_OPT_TOL_ABS = 1e-8
+
+
+class PriorimaxRotator:
+    """
+    The class for the optimization routine of the priorimax rotation.
+
+    Parameters
+    ----------
+    is_global: bool, optional
+        If this is `True`, then the problem of finding the priorimax rotation will be treated as a global
+        optimization problem (SHGO with COBYQA). Otherwise, local optimization (COBYQA) is used. The default
+        value is `False`. Local optimization is generally faster but may produce a sub-optimal solution.
+    num_starts: int, optional
+        This is the number of random starts (i.e., number of local optimizations) used for finding the priorimax
+        rotation, if `is_global` is `False`. The default value is 1. Note that the first start is always taken to
+        be the identity matrix, so that the starts are the identity matrix and (random_starts - 1) random rotation
+        matrices. This is ignored if `is_global` is `True`.
+    samp_points: int, optional
+        This dictates the number of sampling points used in the construction of the simplicial complex for the
+        SHGO algorithm, if `is_global` is `True`. The default value is 500. The total number of sampling points used
+        is (samp_points * ((T^2 + T) / 2)), where T is the number of factors. This is ignored if `is_global` is
+        `False`.
+    max_time: float, optional
+        This is the maximum amount of time in seconds for which the optimizer will run to find the priorimax
+        rotation. If `max_time` is 0 or negative, then the pre-defined orthogonal rotation (e.g., varimax,
+        equamax, etc.) with the best index value is selected (i.e., the priorimax procedure is performed on the
+        set of pre-defined orthogonal rotations). Applies only to global optimization. The default value is
+        `300.0`.
+
+    Attributes
+    ----------
+    is_global: bool
+        Whether optimization is local (`False`) or global (`True`).
+    num_starts: int
+        The number of random starts used when `is_global` is `False`.
+    samp_points: int
+        The multiplier to the number of sampling points for SHGO.
+    max_time: float
+        The maximum amount of time in seconds for which the optimizer can run to find the rotation matrix for
+        global optimization.
+    """
+    
+    def __init__(self, is_global=False, num_starts=1, samp_points=500, max_time=300.0):
+        """
+        Initializes the rotator
+        """
+
+        # Arg checks
+        if not isinstance(is_global, bool):
+            raise TypeError("is_global must be bool")
+        try:
+            num_starts = int(num_starts)
+        except ValueError:
+            raise TypeError("num_starts must be an int or coercible to int")
+        if num_starts < 1:
+            raise ValueError("num_starts must be at least 1")
+        try:
+            samp_points = int(samp_points)
+        except ValueError:
+            raise TypeError("samp_points must be an int or coercible to int")
+        if samp_points < 1:
+            raise ValueError("samp_points must be at least 1")
+        try:
+            max_time = float(max_time)
+        except ValueError:
+            raise TypeError("max_time must be a float or coercible to float")
+
+        # Set values
+        self.is_global = is_global
+        self.max_time = max_time
+        self.num_starts = num_starts
+        self.samp_points = samp_points
+
+        self._start_time = None
+        self._last_best_rotation_matrix = None
+        self._random_state = np.random.RandomState(OPT_SEED)
+
+    @staticmethod
+    def _get_rotation_matrix(x):
+        # This gets the rotation matrix from the array x with (T^2 + T) / 2 elements, where T is the number of factors
+
+        # Convert the input into a skew-symmetrix matrix S and signature matrix D
+        # Note that len(x) = (T^2 + T) / 2
+        # Simply solve the equation for T > 0 to find the number of factors
+        num_of_factors = int((-1 + math.sqrt(1 + 8 * len(x))) / 2)
+        skew_symmetric_matrix = np.zeros(shape=(num_of_factors, num_of_factors))
+        ind = 0
+        for i in range(num_of_factors):
+            for j in range(i):
+                skew_symmetric_matrix[i, j] = x[ind]
+                skew_symmetric_matrix[j, i] = -x[ind]
+                ind += 1
+        diag_matrix = np.zeros(shape=(num_of_factors, num_of_factors))
+        for ind_ in range(ind, len(x)):
+            diag_matrix[ind_ - ind, ind_ - ind] = x[ind_]
+
+        # The orthogonal rotation matrix is ((I - S)(I + S)^(-1))D
+        identity_matrix = np.identity(num_of_factors)
+        i_minus_s = identity_matrix - skew_symmetric_matrix
+        i_plus_s = identity_matrix + skew_symmetric_matrix
+        i_s_product = i_minus_s @ np.linalg.inv(i_plus_s)
+        rotation_matrix = i_s_product @ diag_matrix
+
+        return rotation_matrix
+
+    def _get_rotated_loadings(self, x, unrotated_loadings):
+        # This gets the rotated loadings
+
+        rotation_matrix = self._get_rotation_matrix(x)
+        loadings = unrotated_loadings @ rotation_matrix
+
+        return loadings
+
+    def _obj_fun(self, x, unrotated_loadings, ifa_obj, model=None):
+        # The optimization problem is a minimization problem
+        # Goal must be to minimize -V to maximize V
+
+        return -self._get_v(x, unrotated_loadings, ifa_obj, model)
+
+    def _get_v(self, x, unrotated_loadings, ifa_obj, model=None):
+        # This gets the V-index
+
+        # Get the prior similarities (a) and the loading similarities (b)
+        if model is None:
+            loadings = self._get_rotated_loadings(x, unrotated_loadings)
+        else:
+            loadings = model.loadings_
+        num_of_vars = loadings.shape[0]
+        correlations = loadings / ifa_obj._scaler
+        prior = ifa_obj.prior
+        a = []
+        b = []
+        for i in range(num_of_vars):
+            for j in range(i):
+                if prior[i, j] is not None:
+                    a.append(prior[i, j])
+                    x_1 = correlations[i, :]
+                    x_2 = correlations[j, :]
+                    b.append(1 - math.sqrt((1 / 2) * np.sum(((x_1 ** 2) - (x_2 ** 2)) ** 2)))
+
+        # Compute
+        n = len(a)
+        tau = (1 / 2) * (kendalltau(a, b, variant="b").statistic + 1)
+        a = np.array(a)
+        b = np.array(b)
+        theta = n * np.sum(a * b) - np.sum(a) * np.sum(b)
+        theta = theta / (n * np.sum(a ** 2) - (np.sum(a)) ** 2)
+        theta = (1 / math.pi) * np.arctan(theta) + 1 / 2
+        v = math.sqrt(tau * theta)
+
+        return v
+
+    def _get_best_predefined(self, ifa_obj, model_name):
+        # This gets the best rotation (in terms of the interpretability index) among the pre-defined rotations
+
+        # Initialize values
+        models = []
+        indices = []
+        rot_names = []
+
+        # Fit all available orthogonal rotations (except priorimax)
+        for rot in np.setdiff1d(ORTHOGONAL_ROTATIONS, ["priorimax"]):
+            temp_model = FactorAnalyzer(
+                n_factors=ifa_obj.models[model_name].loadings_.shape[1],
+                rotation=rot,
+                is_corr_matrix=ifa_obj.is_corr_matrix
+            )
+            temp_model.fit(ifa_obj.data_)
+            models.append(temp_model)
+            rot_names.append(rot)
+            indices.append(self._get_v(None, None, ifa_obj, models[-1]))
+
+        # Return the model with the best index value
+        return [models[indices.index(max(indices))], max(indices), rot_names[indices.index(max(indices))]]
+
+    @staticmethod
+    def _generate_constraint(ind):
+        # This generates a constraint for the signature matrix
+
+        def _constraint(x):
+            return x[ind] ** 2 - 1
+
+        return NonlinearConstraint(_constraint, 0, 0)
+
+    def rotate(self, ifa_obj, model_name):
+        # This implements the priorimax rotation
+
+        # Initialize values
+        none_ind = ifa_obj.calculate_v_index(model_name)
+        opt_ind = -1
+        pre_mod, pre_ind, pre_name = self._get_best_predefined(ifa_obj, model_name)
+        unrotated_loadings = ifa_obj.models[model_name].loadings_.copy()
+
+        # Initialize the optimizer
+        num_of_factors = unrotated_loadings.shape[1]
+        num_of_skew_vars = int((num_of_factors * (num_of_factors - 1)) / 2)
+        num_of_diag_vars = int(num_of_factors)
+        num_of_mat_vars = num_of_skew_vars + num_of_diag_vars
+
+        # Set bound constraints for optimization
+        bounds = [(-1, 1)] * num_of_mat_vars
+
+        # Set additional constraints for optimization
+        constraints = []
+        for i in range(num_of_diag_vars):
+            constraints.append(self._generate_constraint(num_of_skew_vars + i))
+
+        if self.is_global:
+            print(f"Performing the priorimax rotation using the global optimization algorithm, SHGO, with "
+                  f"{self.samp_points * num_of_mat_vars} sampling points and with COBYQA as the local "
+                  f"optimization routine...")
+        else:
+            print(f"Performing the priorimax rotation using the local optimization algorithm, COBYQA, with "
+                  f"{self.num_starts} random start(s)...")
+
+        # Optimize
+        result = None
+        self._start_time = time.time()
+        if self.max_time > 0:
+            if self.is_global:
+                result = shgo(
+                    func=self._obj_fun,
+                    bounds=bounds,
+                    args=(unrotated_loadings, ifa_obj),
+                    constraints=constraints,
+                    callback=self._callback,
+                    minimizer_kwargs={
+                        "method": "COBYQA"
+                    },
+                    sampling_method="simplicial",
+                    n=self.samp_points * num_of_mat_vars,
+                    options={
+                        "maxtime": self.max_time
+                    }
+                )
+            else:
+                max_ind = -1
+                for i in range(self.num_starts):
+                    # Get a random start, but make sure first start is identity
+                    if i > 0:
+                        skew = self._random_state.uniform(-1, 1, num_of_skew_vars)
+                        sig = self._random_state.choice([-1, 1], num_of_diag_vars)
+                    else:
+                        skew = np.zeros(num_of_skew_vars)
+                        sig = np.ones(num_of_diag_vars)
+
+                    # Optimize
+                    temp_result = minimize(
+                        fun=self._obj_fun,
+                        x0=np.append(skew, sig),
+                        bounds=bounds,
+                        args=(unrotated_loadings, ifa_obj),
+                        constraints=constraints,
+                        method="COBYQA",
+                        callback=self._callback
+                    )
+                    if temp_result.success:
+                        if abs(temp_result.fun) > max_ind:
+                            result = temp_result
+                    else:
+                        warnings.warn(f"Random start {i} failed to converge. It will be skipped.", RuntimeWarning)
+
+        # Extract "manual" optimization results, if present
+        if result is not None:
+            if result.success:
+                candidate_sol = result.x
+            else:
+                if self.is_global:
+                    warnings.warn("Global optimum was not found. Try increasing `samp_points`...", RuntimeWarning)
+                else:
+                    warnings.warn("Local optimum was not found. Try increasing `num_starts`...", RuntimeWarning)
+                candidate_sol = self._last_best_rotation_matrix
+            if candidate_sol is not None:
+                ifa_obj.models[model_name].loadings_ = self._get_rotated_loadings(candidate_sol, unrotated_loadings)
+                ifa_obj.models[model_name].rotation_matrix_ = self._get_rotation_matrix(candidate_sol)
+                opt_ind = ifa_obj.calculate_v_index(model_name)
+
+        # Decide on the best rotation matrix
+        # 0 - unrotated loadings, 1 - a pre-defined rotation, 2 - manual priorimax rotation from optimization
+        inds = [none_ind, pre_ind, opt_ind]
+        best = inds.index(max(inds))
+        if best == 0:
+            ifa_obj.models[model_name].loadings_ = unrotated_loadings
+            ifa_obj.models[model_name].rotation_matrix_ = None
+            print(f"[{model_name}] The best rotation found (priorimax) is {None}.")
+        elif best == 1:
+            ifa_obj.models[model_name].loadings_ = pre_mod.loadings_
+            ifa_obj.models[model_name].rotation_matrix_ = pre_mod.rotation_matrix_
+            print(f"[{model_name}] The best rotation found (priorimax) is pre-defined ({pre_name}).")
+        elif best == 2:
+            print(f"[{model_name}] The best rotation found (priorimax) is "
+                  f"\n{ifa_obj.models[model_name].rotation_matrix_}.")
+
+    def _callback(self, xk):
+        # The callback function for optimization
+
+        # Try to recover the last "solution" if optimization fails
+        self._last_best_rotation_matrix = xk
+
+        # Capping max time this way does not seem to work anymore
+        # Keeping it here for reference
+        #
+        # elapsed = time.time() - self._start_time
+        # if self.max_time <= 0 or elapsed <= self.max_time:
+        #     return False
+        # if elapsed > self.max_time:
+        #     warnings.warn("Stopping optimization due to timeout", RuntimeWarning)
+        # return True
 
 
 class InterpretableFA:
@@ -61,14 +369,6 @@ class InterpretableFA:
     sample_size: int, optional
         The sample size or `None`, if `is_corr_matrix` is `True`. Otherwise, this is ignored and is set to the number
         of rows in `data_`.
-    opt_seed: int, optional
-        The random seed used for optimization problems for priorimax rotations. The default value is `123`.
-    local_opt_tol_rel: float, optional
-        The relative function value tolerance used for local optimization problems for priorimax. The default value
-        is `1e-8`.
-    local_opt_tol_abs: float, optional
-        The absolute function value tolerance used for local optimization problems for priorimax. The default value
-        is `1e-8`.
 
     Attributes
     ----------
@@ -99,8 +399,7 @@ class InterpretableFA:
     use_url = "https://tfhub.dev/google/universal-sentence-encoder/4"
     use_model = None
 
-    def __init__(self, data_, prior, questions, is_corr_matrix=False, sample_size=None, opt_seed=OPT_SEED,
-                 local_opt_tol_rel=LOCAL_OPT_TOL_REL, local_opt_tol_abs=LOCAL_OPT_TOL_ABS):
+    def __init__(self, data_, prior, questions, is_corr_matrix=False, sample_size=None):
         """
         Initializes the InterpretableFA object. Note that the first time `InterpretableFA.__init__` is called with
         `prior` set to `None`, the class method `InterpretableFA.load_use_model` is run to load the Universal
@@ -113,18 +412,6 @@ class InterpretableFA:
             raise TypeError("data must be a pandas dataframe")
         if not isinstance(is_corr_matrix, bool):
             raise TypeError("is_corr_matrix must be bool")
-        try:
-            opt_seed = int(opt_seed)
-        except ValueError:
-            raise TypeError("opt_seed must be int or coercible to int")
-        try:
-            local_opt_tol_rel = float(local_opt_tol_rel)
-        except ValueError:
-            raise TypeError("local_opt_tol_rel must be float or coercible to float")
-        try:
-            local_opt_tol_abs = float(local_opt_tol_abs)
-        except ValueError:
-            raise TypeError("local_opt_tol_abs must be float or coercible to float")
 
         # Initial values
         self.data_ = data_
@@ -134,10 +421,6 @@ class InterpretableFA:
         self.orthogonal = {}
         self.embeddings = None
         self._scaler = 1
-        self._opt_seed = opt_seed
-        self._local_opt_tol_rel = local_opt_tol_rel
-        self._local_opt_tol_abs = local_opt_tol_abs
-        self._random_state = np.random.RandomState(opt_seed)
 
         # Set values and further arg checks
         if self.is_corr_matrix:
@@ -593,199 +876,9 @@ class InterpretableFA:
 
         return result
 
-    @staticmethod
-    def _get_rotation_matrix(x):
-        # This gets the rotation matrix from the array x with (T^2 + T) / 2 elements, where T is the number of factors
-
-        # Convert the input into a skew-symmetrix matrix S and signature matrix D
-        num_of_factors = int((-1 + math.sqrt(1 + 8 * len(x))) / 2)
-        skew_symmetric_matrix = np.zeros(shape=(num_of_factors, num_of_factors))
-        ind = 0
-        for i in range(num_of_factors):
-            for j in range(i):
-                skew_symmetric_matrix[i, j] = x[ind]
-                skew_symmetric_matrix[j, i] = -x[ind]
-                ind += 1
-        diag_matrix = np.zeros(shape=(num_of_factors, num_of_factors))
-        for ind_ in range(ind, len(x)):
-            diag_matrix[ind_ - ind, ind_ - ind] = x[ind_]
-
-        # The orthogonal rotation matrix is ((I - S)(I + S)^(-1))D
-        identity_matrix = np.identity(num_of_factors)
-        i_minus_s = identity_matrix - skew_symmetric_matrix
-        i_plus_s = identity_matrix + skew_symmetric_matrix
-        i_s_product = i_minus_s @ np.linalg.inv(i_plus_s)
-        rotation_matrix = i_s_product @ diag_matrix
-
-        return rotation_matrix
-
-    def _get_rotated_loadings(self, x, unrotated_loadings):
-        # This gets the rotated loadings
-
-        rotation_matrix = self._get_rotation_matrix(x)
-        loadings = unrotated_loadings @ rotation_matrix
-
-        return loadings
-
-    def _get_v(self, x, grad, unrotated_loadings, model=None):
-        # This gets the V-index
-
-        # Get the prior similarities (a) and the loading similarities (b)
-        if model is None:
-            loadings = self._get_rotated_loadings(x, unrotated_loadings)
-        else:
-            loadings = model.loadings_
-        num_of_vars = loadings.shape[0]
-        correlations = loadings / self._scaler
-        prior = self.prior
-        a = []
-        b = []
-        for i in range(num_of_vars):
-            for j in range(i):
-                if prior[i, j] is not None:
-                    a.append(prior[i, j])
-                    x_1 = correlations[i, :]
-                    x_2 = correlations[j, :]
-                    b.append(1 - math.sqrt((1 / 2) * np.sum(((x_1 ** 2) - (x_2 ** 2)) ** 2)))
-
-        # Compute
-        n = len(a)
-        tau = (1 / 2) * (kendalltau(a, b, variant="b").statistic + 1)
-        a = np.array(a)
-        b = np.array(b)
-        theta = n * np.sum(a * b) - np.sum(a) * np.sum(b)
-        theta = theta / (n * np.sum(a ** 2) - (np.sum(a)) ** 2)
-        theta = (1 / math.pi) * np.arctan(theta) + 1 / 2
-        v = math.sqrt(tau * theta)
-
-        return v
-
-    @staticmethod
-    def _generate_constraint(ind):
-        # This generates a constraint for the signature matrix
-
-        def _constraint(x, grad):
-            return x[ind] ** 2 - 1
-
-        return _constraint
-
-    def _get_best_predefined(self, num_factors):
-        # This gets the best rotation (in terms of the interpretability index) among the pre-defined rotations
-
-        # Initialize values
-        models = []
-        indices = []
-        rot_names = []
-
-        # Fit all available orthogonal rotations (except priorimax)
-        for rot in np.setdiff1d(ORTHOGONAL_ROTATIONS, ["priorimax"]):
-            temp_model = FactorAnalyzer(n_factors=num_factors, rotation=rot, is_corr_matrix=self.is_corr_matrix)
-            temp_model.fit(self.data_)
-            models.append(temp_model)
-            rot_names.append(rot)
-            indices.append(self._get_v(None, None, None, models[-1]))
-
-        # Return the model with the best index value
-        return [models[indices.index(max(indices))], max(indices), rot_names[indices.index(max(indices))]]
-
-    def _rotate_factors(self, model_name, is_global=False, random_starts=1, max_time=300.0):
-        # This implements the priorimax rotation
-
-        print(f"Performing the priorimax rotation using {'global' if is_global else 'local'} optimization "
-              f"with {'maximum run time of' if is_global else random_starts} {max_time if is_global else 
-              'random start(s)...'} {'second(s)...' if is_global else ''}")
-
-        # Initialize values
-        none_ind = self.calculate_v_index(model_name)
-        opt_ind = -1
-        pre_mod, pre_ind, pre_name = self._get_best_predefined(self.models[model_name].loadings_.shape[1])
-        unrotated_loadings = self.models[model_name].loadings_.copy()
-
-        # Initialize the optimizer
-        num_of_factors = unrotated_loadings.shape[1]
-        num_of_skew_vars = int((num_of_factors * (num_of_factors - 1)) / 2)
-        num_of_diag_vars = int(num_of_factors)
-        num_of_mat_vars = num_of_skew_vars + num_of_diag_vars
-        algo_used = nlopt.GN_ISRES if is_global else nlopt.LN_COBYLA
-        opt = nlopt.opt(algo_used, int(num_of_mat_vars))
-
-        # Set the objective function for optimization
-        opt.set_max_objective(lambda x, grad: self._get_v(x, grad, unrotated_loadings))
-
-        # Set constraints for optimization
-        opt.set_lower_bounds(np.array([-1] * num_of_mat_vars))
-        opt.set_upper_bounds(np.array([1] * num_of_mat_vars))
-        for i in range(num_of_diag_vars):
-            opt.add_equality_constraint(self._generate_constraint(num_of_skew_vars + i))
-
-        # Run optimizer
-        results = None
-        opt.set_maxtime(max_time)
-        if max_time > 0:
-            if is_global:
-                # Set additional optimizer parameters
-                nlopt.srand(self._opt_seed)
-                opt.set_population(200 * num_of_mat_vars)
-
-                # Compute
-                results = opt.optimize(np.append(np.zeros(num_of_skew_vars), np.ones(num_of_diag_vars)))
-            else:
-                # Set additional optimizer parameters
-                opt.set_ftol_rel(self._local_opt_tol_rel)
-                opt.set_ftol_abs(self._local_opt_tol_abs)
-
-                # Perform local optimization(s)
-                max_ind = -1
-                for i in range(random_starts):
-                    # Get a random draw from the Haar distribution
-                    if i > 0:
-                        skew = self._random_state.uniform(-1, 1, num_of_skew_vars)
-                        sig = self._random_state.choice([-1, 1], num_of_diag_vars)
-                    else:
-                        skew = np.zeros(num_of_skew_vars)
-                        sig = np.ones(num_of_diag_vars)
-
-                    # Perform the optimization
-                    temp_results = None
-                    try:
-                        temp_results = opt.optimize(np.append(skew, sig))
-                    except nlopt.RoundoffLimited:
-                        warnings.warn(f"Random start {i} encountered limitations due to roundoff errors. "
-                                      f"It will be skipped. Try increasing the tolerance values.", RuntimeWarning)
-                        pass
-                    if temp_results is not None:
-                        self.models[model_name].loadings_ = self._get_rotated_loadings(temp_results, unrotated_loadings)
-                        self.models[model_name].rotation_matrix_ = self._get_rotation_matrix(temp_results)
-                        temp_opt_ind = self.calculate_v_index(model_name)
-                        if temp_opt_ind > max_ind:
-                            results = temp_results
-                            max_ind = temp_opt_ind
-
-        # Extract "manual" optimization results, if present
-        if results is not None:
-            self.models[model_name].loadings_ = self._get_rotated_loadings(results, unrotated_loadings)
-            self.models[model_name].rotation_matrix_ = self._get_rotation_matrix(results)
-            opt_ind = self.calculate_v_index(model_name)
-
-        # Decide on the best rotation matrix
-        # 0 - unrotated loadings, 1 - a pre-defined rotation, 2 - manual priorimax rotation from optimization
-        inds = [none_ind, pre_ind, opt_ind]
-        best = inds.index(max(inds))
-        if best == 0:
-            self.models[model_name].loadings_ = unrotated_loadings
-            self.models[model_name].rotation_matrix_ = None
-            print(f"[{model_name}] The best rotation found (priorimax) is {None}.")
-        elif best == 1:
-            self.models[model_name].loadings_ = pre_mod.loadings_
-            self.models[model_name].rotation_matrix_ = pre_mod.rotation_matrix_
-            print(f"[{model_name}] The best rotation found (priorimax) is pre-defined ({pre_name}).")
-        elif best == 2:
-            print(f"[{model_name}] The best rotation found (priorimax) is "
-                  f"\n{self.models[model_name].rotation_matrix_}.")
-
-    def fit_factor_model(self, model_name, n_factors=3, rotation="priorimax", is_global=False, random_starts=1,
-                         max_time=300.0, method="minres", use_smc=True, bounds=(0.005, 1), impute="median",
-                         svd_method="randomized", rotation_kwargs=None):
+    def fit_factor_model(self, model_name, n_factors=3, rotation="priorimax", is_global=False, num_starts=1,
+                         samp_points=500, max_time=300.0, method="minres", use_smc=True, bounds=(0.005, 1),
+                         impute="median", svd_method="randomized", rotation_kwargs=None):
         """
         This fits the factor model (and saves it in `self.models`). This extends
         `factor_analyzer.factor_analyzer.FactorAnalyzer` from the factor_analyzer package to include
@@ -816,18 +909,23 @@ class InterpretableFA:
         is_global: bool, optional
             If this is `True`, then the problem of finding the priorimax rotation will be treated as a global
             optimization problem. Otherwise, local optimization is used. Note that this is ignored if the priorimax
-            rotation is not used. The default value is `False`.
-        random_starts: int, optional
+            rotation is not used. The default value is `False`. This is ignored when `rotation` is not '"priorimax"'.
+        num_starts: int, optional
             This is the number of random starts (i.e., number of local optimizations) used for finding the priorimax
             rotation, if `is_global` is `False`. The default value is 1. Note that the first start is always taken to
             be the identity matrix, so that the starts are the identity matrix and (random_starts - 1) random rotation
-            matrices. This is ignored when `rotation` is not `"priorimax"`.
+            matrices. This is ignored if `is_global` is `True`. This is ignored when `rotation` is not '"priorimax"'.
+        samp_points: int, optional
+            This dictates the number of sampling points used in the construction of the simplicial complex for the
+            SHGO algorithm, if `is_global` is `True`. The default value is 500. The total number of sampling points used
+            is (samp_points * ((T^2 + T) / 2)), where T is the number of factors. This is ignored if `is_global` is
+            `False`. This is ignored when `rotation` is not '"priorimax"'.
         max_time: float, optional
             This is the maximum amount of time in seconds for which the optimizer will run to find the priorimax
             rotation. If `max_time` is 0 or negative, then the pre-defined orthogonal rotation (e.g., varimax,
             equamax, etc.) with the best index value is selected (i.e., the priorimax procedure is performed on the
-            set of pre-defined orthogonal rotations). The default value is `300.0` (i.e., 5 minutes). This is
-            ignored when `rotation` is not '"priorimax"'.
+            set of pre-defined orthogonal rotations). Applies only to global optimization. The default value is
+            `300.0`. This is ignored when `rotation` is not '"priorimax"'.
         method : {'minres', 'ml', 'principal'}, optional
             The `method` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is '"minres"'.
         use_smc : bool, optional
@@ -856,29 +954,34 @@ class InterpretableFA:
         if not isinstance(is_global, bool):
             raise TypeError("is_global must be bool")
         try:
+            num_starts = int(num_starts)
+        except ValueError:
+            raise TypeError("num_starts must be an int or coercible to int")
+        if num_starts < 1:
+            raise ValueError("num_starts must be at least 1")
+        try:
+            samp_points = int(samp_points)
+        except ValueError:
+            raise TypeError("samp_points must be an int or coercible to int")
+        if samp_points < 1:
+            raise ValueError("samp_points must be at least 1")
+        try:
             max_time = float(max_time)
         except ValueError:
             raise TypeError("max_time must be a float or coercible to float")
-        try:
-            random_starts = int(random_starts)
-        except ValueError:
-            raise TypeError("random_starts must be an int or coercible to int")
-        if random_starts < 1:
-            raise ValueError("random_starts must be at least 1")
 
         # Fit the factor model
         self.orthogonal[model_name] = rotation is None or rotation in ORTHOGONAL_ROTATIONS
+        priorimax_rotator = None
         if rotation == "priorimax":
-            special_rotation = rotation
             rotation = None
-        else:
-            special_rotation = "none"
+            priorimax_rotator = PriorimaxRotator(is_global, num_starts, samp_points, max_time)
         fa = FactorAnalyzer(n_factors, rotation, method, use_smc, self.is_corr_matrix, bounds,
                             impute, svd_method, rotation_kwargs)
         fa.fit(self.data_)
         self.models[model_name] = fa
-        if special_rotation != "none":
-            self._rotate_factors(model_name, is_global, random_starts, max_time)
+        if priorimax_rotator is not None:
+            priorimax_rotator.rotate(self, model_name)
         model = self.models[model_name]
 
         return model
