@@ -7,7 +7,7 @@ with open(path.join(working_directory, "README.md"), encoding="utf-8") as f:
 
 setup(
     name="interpretablefa",
-    version="3.0.0",
+    version="4.0.0",
     author="Justin Philip Tuazon, Gia Mizrane Abubo",
     description="A package for interpretable factor analysis",
     long_description=long_description,
@@ -16,11 +16,10 @@ setup(
     license="GNU General Public License 3.0",
     install_requires=[
         "tensorflow_hub",
-        "numpy==1.26.4",
+        "numpy",
         "pandas",
         "scikit-learn",
         "scipy",
-        "nlopt",
         "factor_analyzer",
         "seaborn",
         "matplotlib",
