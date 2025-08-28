@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v4.0.2
+# interpretablefa v4.0.3
 # https://pypi.org/project/interpretablefa/
 
 import math
@@ -32,6 +32,8 @@ ORTHOGONAL_ROTATIONS = ["priorimax", "varimax", "oblimax", "quartimax", "equamax
 OBLIQUE_ROTATIONS = ["promax", "oblimin", "quartimin"]
 POSSIBLE_ROTATIONS = ORTHOGONAL_ROTATIONS + OBLIQUE_ROTATIONS
 OPT_SEED = 123
+COBYQA_INITIAL_TR = 0.25
+COBYQA_FINAL_TR = 1e-8
 
 
 class PriorimaxRotator:
@@ -259,7 +261,11 @@ class PriorimaxRotator:
                     constraints=constraints,
                     callback=self._callback,
                     minimizer_kwargs={
-                        "method": "COBYQA"
+                        "method": "COBYQA",
+                        "options": {
+                            "initial_tr_radius": COBYQA_INITIAL_TR,
+                            "final_tr_radius": COBYQA_FINAL_TR
+                        }
                     },
                     sampling_method="simplicial",
                     n=self.samp_points * num_of_mat_vars
@@ -291,8 +297,8 @@ class PriorimaxRotator:
                         method="COBYQA",
                         callback=self._callback,
                         options={
-                            "initial_tr_radius": 0.1,
-                            "final_tr_radius": 1e-08
+                            "initial_tr_radius": COBYQA_INITIAL_TR,
+                            "final_tr_radius": COBYQA_FINAL_TR
                         }
                     )
                     if temp_result.success:
@@ -365,10 +371,10 @@ class InterpretableFA:
         If `prior` is `"semantics"`, then the prior (i.e., soft constraints matrix) is generated using pairwise
         semantic similarities of `questions` from the Universal Sentence Encoder. If `prior` is of class
         `numpy.ndarray`, it must be a 2D array (i.e., its shape must be an ordered pair).
-    questions: list of str, optional
+    questions: list of str or `None`, optional
         The questions associated with each variable. It is assumed that the order of the questions correspond to the
         order of the columns in `data_`. For example, the first element in `questions` correspond to the first column
-        of `data_`. If `prior` is not `"semantics"`, this is ignored.
+        of `data_`. If `prior` is not `"semantics"`, this is ignored. Default value is `None`.
     is_corr_matrix: bool, optional
         `True` if the data supplied is a correlation matrix and `False` otherwise. Defaults to `True`.
     sample_size: int, optional
@@ -389,7 +395,7 @@ class InterpretableFA:
         The dictionary containing the saved or fitted models, where the keys are the model names and the values are
         the models. Note that a model must be stored in this dictionary in order to analyze them further.
     questions: list of str
-        The list of questions used for calculating semantic similarities.
+        The list of questions used for calculating semantic similarities. Defaults to `None`.
     embeddings: list or `None`
         The embeddings of the questions, used for calculating semantic similarities.
     kmo: tuple
@@ -404,7 +410,7 @@ class InterpretableFA:
     use_url = "https://tfhub.dev/google/universal-sentence-encoder/4"
     use_model = None
 
-    def __init__(self, data_, prior, questions, is_corr_matrix=False, sample_size=None):
+    def __init__(self, data_, prior, questions=None, is_corr_matrix=False, sample_size=None):
         """
         Initializes the InterpretableFA object. Note that the first time `InterpretableFA.__init__` is called with
         `prior` set to `None`, the class method `InterpretableFA.load_use_model` is run to load the Universal
