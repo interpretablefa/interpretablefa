@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v4.0.1
+# interpretablefa v4.0.2
 # https://pypi.org/project/interpretablefa/
 
 import math
@@ -55,11 +55,10 @@ class PriorimaxRotator:
         is (samp_points * ((T^2 + T) / 2)), where T is the number of factors. This is ignored if `is_global` is
         `False`.
     max_time: float, optional
-        This is the maximum amount of time in seconds for which the optimizer will run to find the priorimax
+        This is the maximum amount of time in seconds for which an optimizer will run to find the priorimax
         rotation. If `max_time` is 0 or negative, then the pre-defined orthogonal rotation (e.g., varimax,
         equamax, etc.) with the best index value is selected (i.e., the priorimax procedure is performed on the
-        set of pre-defined orthogonal rotations). Applies only to global optimization. The default value is
-        `300.0`.
+        set of pre-defined orthogonal rotations). The default value is`300.0`.
 
     Attributes
     ----------
@@ -70,8 +69,7 @@ class PriorimaxRotator:
     samp_points: int
         The multiplier to the number of sampling points for SHGO.
     max_time: float
-        The maximum amount of time in seconds for which the optimizer can run to find the rotation matrix for
-        global optimization.
+        The maximum amount of time in seconds for which an optimizer runs.
     """
     
     def __init__(self, is_global=False, num_starts=1, samp_points=500, max_time=300.0):
@@ -249,7 +247,9 @@ class PriorimaxRotator:
 
         # Optimize
         result = None
+        run_local = not self.is_global
         self._start_time = time.time()
+        local_starts = self.num_starts
         if self.max_time > 0:
             if self.is_global:
                 result = shgo(
@@ -262,14 +262,17 @@ class PriorimaxRotator:
                         "method": "COBYQA"
                     },
                     sampling_method="simplicial",
-                    n=self.samp_points * num_of_mat_vars,
-                    options={
-                        "maxtime": self.max_time
-                    }
+                    n=self.samp_points * num_of_mat_vars
                 )
-            else:
+                if not result.success:
+                    warnings.warn(f"Global optimization failed. Try increasing `samp_points` or `max_time`. "
+                                  f"Falling back to local optimization with 5 random starts...", RuntimeWarning)
+                    run_local = True
+                    local_starts = 5
+            if run_local:
                 max_ind = -1
-                for i in range(self.num_starts):
+                suceeded = False
+                for i in range(local_starts):
                     # Get a random start, but make sure first start is identity
                     if i > 0:
                         skew = self._random_state.uniform(-1, 1, num_of_skew_vars)
@@ -286,24 +289,28 @@ class PriorimaxRotator:
                         args=(unrotated_loadings, ifa_obj),
                         constraints=constraints,
                         method="COBYQA",
-                        callback=self._callback
+                        callback=self._callback,
+                        options={
+                            "initial_tr_radius": 0.1,
+                            "final_tr_radius": 1e-08
+                        }
                     )
                     if temp_result.success:
                         if abs(temp_result.fun) > max_ind:
                             result = temp_result
                             max_ind = abs(temp_result.fun)
+                            suceeded = True
                     else:
-                        warnings.warn(f"Random start {i} failed to converge. It will be skipped.", RuntimeWarning)
+                        warnings.warn(f"Local random start {i} failed to converge. It will be skipped.", RuntimeWarning)
+                if not suceeded:
+                    warnings.warn("All local random starts failed. Try increasing "
+                                  "`num_starts` or `max_time`...", RuntimeWarning)
 
         # Extract "manual" optimization results, if present
         if result is not None:
             if result.success:
                 candidate_sol = result.x
             else:
-                if self.is_global:
-                    warnings.warn("Global optimum was not found. Try increasing `samp_points`...", RuntimeWarning)
-                else:
-                    warnings.warn("Local optimum was not found. Try increasing `num_starts`...", RuntimeWarning)
                 candidate_sol = self._last_best_rotation_matrix
             if candidate_sol is not None:
                 ifa_obj.models[model_name].loadings_ = self._get_rotated_loadings(candidate_sol, unrotated_loadings)
@@ -326,21 +333,18 @@ class PriorimaxRotator:
             print(f"[{model_name}] The best rotation found (priorimax) is "
                   f"\n{ifa_obj.models[model_name].rotation_matrix_}.")
 
-    def _callback(self, xk):
+    def _callback(self, xk, *_):
         # The callback function for optimization
 
         # Try to recover the last "solution" if optimization fails
         self._last_best_rotation_matrix = xk
 
-        # Capping max time this way does not seem to work anymore
-        # Keeping it here for reference
-        #
-        # elapsed = time.time() - self._start_time
-        # if self.max_time <= 0 or elapsed <= self.max_time:
-        #     return False
-        # if elapsed > self.max_time:
-        #     warnings.warn("Stopping optimization due to timeout", RuntimeWarning)
-        # return True
+        # Terminate if optimization is taking too long
+        elapsed = time.time() - self._start_time
+        if elapsed > self.max_time:
+            warnings.warn("Stopping optimization due to timeout based on `max_time`. "
+                          "Falling back to last best result found.", RuntimeWarning)
+            raise StopIteration(f"Time limit exceeded.")
 
 
 class InterpretableFA:
@@ -922,11 +926,11 @@ class InterpretableFA:
             is (samp_points * ((T^2 + T) / 2)), where T is the number of factors. This is ignored if `is_global` is
             `False`. This is ignored when `rotation` is not '"priorimax"'.
         max_time: float, optional
-            This is the maximum amount of time in seconds for which the optimizer will run to find the priorimax
+            This is the maximum amount of time in seconds for which an optimizer will run to find the priorimax
             rotation. If `max_time` is 0 or negative, then the pre-defined orthogonal rotation (e.g., varimax,
             equamax, etc.) with the best index value is selected (i.e., the priorimax procedure is performed on the
-            set of pre-defined orthogonal rotations). Applies only to global optimization. The default value is
-            `300.0`. This is ignored when `rotation` is not '"priorimax"'.
+            set of pre-defined orthogonal rotations). The default value is `300.0`. This is ignored when `rotation`
+            is not '"priorimax"'.
         method : {'minres', 'ml', 'principal'}, optional
             The `method` supplied to `factor_analyzer.factor_analyzer.FactorAnalyzer`. The default value is '"minres"'.
         use_smc : bool, optional
