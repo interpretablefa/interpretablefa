@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v4.0.3
+# interpretablefa v5.0.0
 # https://pypi.org/project/interpretablefa/
 
 import math
@@ -26,7 +26,6 @@ from itertools import product
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import seaborn as sns
-
 
 ORTHOGONAL_ROTATIONS = ["priorimax", "varimax", "oblimax", "quartimax", "equamax"]
 OBLIQUE_ROTATIONS = ["promax", "oblimin", "quartimin"]
@@ -73,7 +72,7 @@ class PriorimaxRotator:
     max_time: float
         The maximum amount of time in seconds for which an optimizer runs.
     """
-    
+
     def __init__(self, is_global=False, num_starts=1, samp_points=500, max_time=300.0):
         """
         Initializes the rotator
@@ -191,13 +190,22 @@ class PriorimaxRotator:
         models = []
         indices = []
         rot_names = []
+        num_man = ifa_obj.models[model_name].loadings_.shape[0]
+        num_fac = ifa_obj.models[model_name].loadings_.shape[1]
 
         # Fit all available orthogonal rotations (except priorimax)
         for rot in np.setdiff1d(ORTHOGONAL_ROTATIONS, ["priorimax"]):
+            if rot == "equamax":
+                rot_kwargs = {
+                    "kappa": num_fac / (2 * num_man)
+                }
+            else:
+                rot_kwargs = None
             temp_model = FactorAnalyzer(
-                n_factors=ifa_obj.models[model_name].loadings_.shape[1],
+                n_factors=num_fac,
                 rotation=rot,
-                is_corr_matrix=ifa_obj.is_corr_matrix
+                is_corr_matrix=ifa_obj.is_corr_matrix,
+                rotation_kwargs=rot_kwargs
             )
             temp_model.fit(ifa_obj.data_)
             models.append(temp_model)
@@ -327,6 +335,7 @@ class PriorimaxRotator:
         # 0 - unrotated loadings, 1 - a pre-defined rotation, 2 - manual priorimax rotation from optimization
         inds = [none_ind, pre_ind, opt_ind]
         best = inds.index(max(inds))
+        actual_rot = None
         if best == 0:
             ifa_obj.models[model_name].loadings_ = unrotated_loadings
             ifa_obj.models[model_name].rotation_matrix_ = None
@@ -334,10 +343,14 @@ class PriorimaxRotator:
         elif best == 1:
             ifa_obj.models[model_name].loadings_ = pre_mod.loadings_
             ifa_obj.models[model_name].rotation_matrix_ = pre_mod.rotation_matrix_
+            actual_rot = pre_name
             print(f"[{model_name}] The best rotation found (priorimax) is pre-defined ({pre_name}).")
         elif best == 2:
+            actual_rot = "priorimax"
             print(f"[{model_name}] The best rotation found (priorimax) is "
                   f"\n{ifa_obj.models[model_name].rotation_matrix_}.")
+
+        return actual_rot
 
     def _callback(self, xk, *_):
         # The callback function for optimization
@@ -431,6 +444,9 @@ class InterpretableFA:
         self.models = {}
         self.orthogonal = {}
         self.embeddings = None
+
+        # In case the manifest variables are not standardized
+        # Right now, they are always standardized
         self._scaler = 1
 
         # Set values and further arg checks
@@ -992,10 +1008,12 @@ class InterpretableFA:
         fa.fit(self.data_)
         self.models[model_name] = fa
         if priorimax_rotator is not None:
-            priorimax_rotator.rotate(self, model_name)
+            actual_rot = priorimax_rotator.rotate(self, model_name)
+        else:
+            actual_rot = rotation
         model = self.models[model_name]
 
-        return model
+        return model, actual_rot
 
     def summarize_model(self, model_name, loadings_and_scores=True):
         """
