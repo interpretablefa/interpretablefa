@@ -7,7 +7,7 @@ with open(path.join(working_directory, "README.md"), encoding="utf-8") as f:
 
 setup(
     name="interpretablefa",
-    version="4.0.1",
+    version="5.0.0",
     author="Justin Philip Tuazon, Gia Mizrane Abubo",
     description="A package for interpretable factor analysis",
     long_description=long_description,
@@ -33,4 +33,5 @@ setup(
         "Topic :: Scientific/Engineering"
     ]
 )
+
 
