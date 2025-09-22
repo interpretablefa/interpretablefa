@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v5.0.0
+# interpretablefa v5.1.0
 # https://pypi.org/project/interpretablefa/
 
 import math
@@ -31,8 +31,6 @@ ORTHOGONAL_ROTATIONS = ["priorimax", "varimax", "oblimax", "quartimax", "equamax
 OBLIQUE_ROTATIONS = ["promax", "oblimin", "quartimin"]
 POSSIBLE_ROTATIONS = ORTHOGONAL_ROTATIONS + OBLIQUE_ROTATIONS
 OPT_SEED = 123
-COBYQA_INITIAL_TR = 0.25
-COBYQA_FINAL_TR = 1e-8
 
 
 class PriorimaxRotator:
@@ -73,7 +71,8 @@ class PriorimaxRotator:
         The maximum amount of time in seconds for which an optimizer runs.
     """
 
-    def __init__(self, is_global=False, num_starts=1, samp_points=500, max_time=300.0):
+    def __init__(self, is_global=False, num_starts=1, samp_points=500, max_time=300.0,
+                 cobyqa_initial_tr=0.2, cobyqa_final_tr=1e-6):
         """
         Initializes the rotator
         """
@@ -103,6 +102,8 @@ class PriorimaxRotator:
         self.max_time = max_time
         self.num_starts = num_starts
         self.samp_points = samp_points
+        self.cobyqa_initial_tr = cobyqa_initial_tr
+        self.cobyqa_final_tr = cobyqa_final_tr
 
         self._start_time = None
         self._last_best_rotation_matrix = None
@@ -271,8 +272,8 @@ class PriorimaxRotator:
                     minimizer_kwargs={
                         "method": "COBYQA",
                         "options": {
-                            "initial_tr_radius": COBYQA_INITIAL_TR,
-                            "final_tr_radius": COBYQA_FINAL_TR
+                            "initial_tr_radius": self.cobyqa_initial_tr,
+                            "final_tr_radius": self.cobyqa_final_tr
                         }
                     },
                     sampling_method="simplicial",
@@ -280,7 +281,8 @@ class PriorimaxRotator:
                 )
                 if not result.success:
                     warnings.warn(f"Global optimization failed. Try increasing `samp_points` or `max_time`. "
-                                  f"Falling back to local optimization with 5 random starts...", RuntimeWarning)
+                                  f"You can also try modifying COBYQA trust radii. Falling back to local optimization "
+                                  f"with 5 random starts...", RuntimeWarning)
                     run_local = True
                     local_starts = 5
             if run_local:
@@ -305,8 +307,8 @@ class PriorimaxRotator:
                         method="COBYQA",
                         callback=self._callback,
                         options={
-                            "initial_tr_radius": COBYQA_INITIAL_TR,
-                            "final_tr_radius": COBYQA_FINAL_TR
+                            "initial_tr_radius": self.cobyqa_initial_tr,
+                            "final_tr_radius": self.cobyqa_final_tr
                         }
                     )
                     if temp_result.success:
@@ -318,7 +320,8 @@ class PriorimaxRotator:
                         warnings.warn(f"Local random start {i} failed to converge. It will be skipped.", RuntimeWarning)
                 if not suceeded:
                     warnings.warn("All local random starts failed. Try increasing "
-                                  "`num_starts` or `max_time`...", RuntimeWarning)
+                                  "`num_starts` or `max_time`. You can also try modifying COBYQA "
+                                  "trust radii.", RuntimeWarning)
 
         # Extract "manual" optimization results, if present
         if result is not None:
@@ -973,6 +976,11 @@ class InterpretableFA:
         ----------
         model: :obj: `factor_analyzer.factor_analyzer.FactorAnalyzer`
             The model fitted.
+        actual_rot: str or `None`
+            The actual rotation method used. If `rotation` is not "priorimax", this will be the same as
+            `rotation`. If `rotation` is "priorimax", this will be "priorimax" if the optimization routine found
+            a solution that is better compared to any pre-defined rotation (and the best pre-defined rotation,
+            otherwise).
         """
 
         # Arg checks
