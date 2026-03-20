@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v5.1.0
+# interpretablefa v6.0.0
 # https://pypi.org/project/interpretablefa/
 
 import math
@@ -80,18 +80,21 @@ class PriorimaxRotator:
         # Arg checks
         if not isinstance(is_global, bool):
             raise TypeError("is_global must be bool")
+
         try:
             num_starts = int(num_starts)
         except ValueError:
             raise TypeError("num_starts must be an int or coercible to int")
         if num_starts < 1:
             raise ValueError("num_starts must be at least 1")
+
         try:
             samp_points = int(samp_points)
         except ValueError:
             raise TypeError("samp_points must be an int or coercible to int")
         if samp_points < 1:
             raise ValueError("samp_points must be at least 1")
+
         try:
             max_time = float(max_time)
         except ValueError:
@@ -145,13 +148,13 @@ class PriorimaxRotator:
 
         return loadings
 
-    def _obj_fun(self, x, unrotated_loadings, ifa_obj, model=None):
+    def _obj_fun(self, x, unrotated_loadings, ifa_obj, model_name):
         # The optimization problem is a minimization problem
         # Goal must be to minimize -V to maximize V
 
-        return -self._get_v(x, unrotated_loadings, ifa_obj, model)
+        return -self._get_v(x, unrotated_loadings, ifa_obj, model_name)
 
-    def _get_v(self, x, unrotated_loadings, ifa_obj, model=None):
+    def _get_v(self, x, unrotated_loadings, ifa_obj, model_name, model=None):
         # This gets the V-index
 
         # Get the prior similarities (a) and the loading similarities (b)
@@ -161,12 +164,17 @@ class PriorimaxRotator:
             loadings = model.loadings_
         num_of_vars = loadings.shape[0]
         correlations = loadings / ifa_obj._scaler
-        prior = ifa_obj.prior
+        prior = ifa_obj.models[model_name].prior_
+        if prior is None:
+            return None
+        elif isinstance(prior, list):
+            prior = ifa_obj.calculate_semantic_similarity(prior)
+
         a = []
         b = []
         for i in range(num_of_vars):
             for j in range(i):
-                if prior[i, j] is not None:
+                if not pd.isna(prior[i, j]):
                     a.append(prior[i, j])
                     x_1 = correlations[i, :]
                     x_2 = correlations[j, :]
@@ -211,7 +219,7 @@ class PriorimaxRotator:
             temp_model.fit(ifa_obj.data_)
             models.append(temp_model)
             rot_names.append(rot)
-            indices.append(self._get_v(None, None, ifa_obj, models[-1]))
+            indices.append(self._get_v(None, None, ifa_obj, model_name, models[-1]))
 
         # Return the model with the best index value
         return [models[indices.index(max(indices))], max(indices), rot_names[indices.index(max(indices))]]
@@ -266,7 +274,7 @@ class PriorimaxRotator:
                 result = shgo(
                     func=self._obj_fun,
                     bounds=bounds,
-                    args=(unrotated_loadings, ifa_obj),
+                    args=(unrotated_loadings, ifa_obj, model_name),
                     constraints=constraints,
                     callback=self._callback,
                     minimizer_kwargs={
@@ -302,7 +310,7 @@ class PriorimaxRotator:
                         fun=self._obj_fun,
                         x0=np.append(skew, sig),
                         bounds=bounds,
-                        args=(unrotated_loadings, ifa_obj),
+                        args=(unrotated_loadings, ifa_obj, model_name),
                         constraints=constraints,
                         method="COBYQA",
                         callback=self._callback,
@@ -383,14 +391,6 @@ class InterpretableFA:
     ----------
     data_: :obj: `pandas.core.frame.DataFrame`
         The data to be used for fitting factor models. Can be either the raw data or the correlation matrix.
-    prior: :obj: `numpy.ndarray` or `None`
-        If `prior` is `"semantics"`, then the prior (i.e., soft constraints matrix) is generated using pairwise
-        semantic similarities of `questions` from the Universal Sentence Encoder. If `prior` is of class
-        `numpy.ndarray`, it must be a 2D array (i.e., its shape must be an ordered pair).
-    questions: list of str or `None`, optional
-        The questions associated with each variable. It is assumed that the order of the questions correspond to the
-        order of the columns in `data_`. For example, the first element in `questions` correspond to the first column
-        of `data_`. If `prior` is not `"semantics"`, this is ignored. Default value is `None`.
     is_corr_matrix: bool, optional
         `True` if the data supplied is a correlation matrix and `False` otherwise. Defaults to `True`.
     sample_size: int, optional
@@ -405,28 +405,25 @@ class InterpretableFA:
         `True` if the data is a correlation matrix and `False` otherwise.
     sample_size: int
         The sample size
-    prior: :obj: `numpy.ndarray` or `"semantics"`
-        The prior used for calculating the interpretability index and for the performing priorimax rotation.
     models: dict
         The dictionary containing the saved or fitted models, where the keys are the model names and the values are
-        the models. Note that a model must be stored in this dictionary in order to analyze them further.
-    questions: list of str
-        The list of questions used for calculating semantic similarities. Defaults to `None`.
-    embeddings: list or `None`
-        The embeddings of the questions, used for calculating semantic similarities.
+        the models. Note that a model must be stored in this dictionary in order to analyze them further. Note that the
+        models are `factor_analyzer.factor_analyzer.FactorAnalyzer` objects. Thus, they have the `loadings_`, `corr_`,
+        `rotation_matrix_`, `structure_`, and `phi_` attributes. It was extended to have the `is_orthogonal_` and
+        `prior_` attributes, as well. The `is_orthogonal_` attribute is `True` if an orthogonal rotation was applied
+        to the model and `False` otherwise. The `prior_` attribute contains the prior matrix used for the priorimax
+        rotation or the list of statements used to compute semantic similarities for the prior matrix. If not
+        applicable, it is `None`.
     kmo: tuple
         The KMOs per item and overall KMO
     sphericity: tuple
         The test statistic and p-value of Bartlett's Test for Sphericity
-    orthogonal: dict
-        The dictionary containing information on whether a model is orthogonal or not. They keys are the model names
-        and each value is either `True` (if the model is orthogonal) or `False`.
     """
 
     use_url = "https://tfhub.dev/google/universal-sentence-encoder/4"
     use_model = None
 
-    def __init__(self, data_, prior, questions=None, is_corr_matrix=False, sample_size=None):
+    def __init__(self, data_, is_corr_matrix=False, sample_size=None):
         """
         Initializes the InterpretableFA object. Note that the first time `InterpretableFA.__init__` is called with
         `prior` set to `None`, the class method `InterpretableFA.load_use_model` is run to load the Universal
@@ -437,6 +434,9 @@ class InterpretableFA:
         # Initial arg checks
         if not isinstance(data_, pd.DataFrame):
             raise TypeError("data must be a pandas dataframe")
+        if data_.shape[1] != data_.select_dtypes(include=np.number).shape[1]:
+            raise ValueError("all columns of the dataframe must be numeric")
+
         if not isinstance(is_corr_matrix, bool):
             raise TypeError("is_corr_matrix must be bool")
 
@@ -445,8 +445,8 @@ class InterpretableFA:
         self.is_corr_matrix = is_corr_matrix
         self.sample_size = None
         self.models = {}
-        self.orthogonal = {}
-        self.embeddings = None
+        self.kmo = None
+        self.sphericity = None
 
         # In case the manifest variables are not standardized
         # Right now, they are always standardized
@@ -461,8 +461,10 @@ class InterpretableFA:
                     raise TypeError("the sample size must be either None, int, or coercible to int")
                 if self.sample_size < 1:
                     raise ValueError("the sample size must be at least 1")
+
             if self.data_.shape[0] != self.data_.shape[1]:
                 raise ValueError("the data correlation matrix must be a square matrix")
+
             for row in range(self.data_.shape[0]):
                 for col in range(row + 1):
                     val = self.data_.iloc[row, col]
@@ -482,50 +484,16 @@ class InterpretableFA:
                             self.data_.iloc[row, col] = val
                     if abs(val) > 1:
                         raise ValueError("entries in the data correlation matrix must be between -1 and 1, inclusive")
+
             if not np.all(np.linalg.eigvals(self.data_) >= 0):
                 raise ValueError("the correlation matrix must be positive semi-definite")
+
             self.kmo = self._get_kmo()
             self.sphericity = self._get_shpericity()
         else:
             self.kmo = calculate_kmo(self.data_)
             self.sphericity = calculate_bartlett_sphericity(self.data_)
             self.sample_size = self.data_.shape[0]
-        if isinstance(prior, np.ndarray):
-            self.questions = []
-            if len(prior.shape) != 2:
-                raise ValueError("the shape of prior must be 2")
-            if prior.shape[0] != data_.shape[1]:
-                raise ValueError("the number of rows and of columns in prior must match the number of columns in data")
-            for row in range(prior.shape[0]):
-                for col in range(row + 1):
-                    val = prior[row, col]
-                    if val is None:
-                        if prior[col, row] is None:
-                            continue
-                        else:
-                            raise ValueError("prior must be a symmetric matrix (2D numpy array)")
-                    else:
-                        if not np.isclose(val, prior[col, row]):
-                            raise ValueError("prior must be a symmetric matrix (2D numpy array)")
-                        else:
-                            prior[col, row] = val
-                    try:
-                        float(val)
-                    except ValueError:
-                        raise TypeError("values in prior must either be a float, coercible to float, or None")
-            self.prior = prior
-        elif prior == "semantics":
-            if not (bool(questions) and isinstance(questions, list) and
-                    all(isinstance(question, str) for question in questions)):
-                raise TypeError("questions must be a list of strings")
-            if data_.shape[1] != len(questions):
-                raise ValueError("the length of questions must match the number of columns in data")
-            self.questions = questions
-            if InterpretableFA.use_model is None:
-                InterpretableFA.load_use_model()
-            self.prior = self._calculate_semantic_similarity()
-        else:
-            raise TypeError("prior must be a 2D numpy array or 'semantics'")
 
     @staticmethod
     def _corr_to_pcorr(corr_mat):
@@ -612,8 +580,10 @@ class InterpretableFA:
             raise TypeError("size must be an integer")
         if size < 1:
             raise ValueError("size must be positive")
+
         if not isinstance(groupings, list):
             raise TypeError("groupings must be a list")
+
         items = [item for group in groupings for item in group]
         if not all(isinstance(item, int) for item in items):
             raise TypeError("all elements of each sublist in groupings must be an integer")
@@ -645,12 +615,15 @@ class InterpretableFA:
         # This loads the Universal Sentence Encoder from Cer et al. (2018) into memory
         cls.use_model = hub.load(cls.use_url)
 
-    def _calculate_semantic_similarity(self):
+    @staticmethod
+    def calculate_semantic_similarity(statements):
         # This gets the semantic similarity matrix.
 
-        if self.embeddings is None and len(self.questions) > 0:
-            self.embeddings = InterpretableFA.use_model(self.questions)
-        dots = np.inner(self.embeddings, self.embeddings)
+        if InterpretableFA.use_model is None:
+            InterpretableFA.load_use_model()
+
+        embeddings = InterpretableFA.use_model(statements)
+        dots = np.inner(embeddings, embeddings)
         for i in product(range(dots.shape[0]), range(dots.shape[0])):
             # Absolute values may exceed 1 due to precision errors
             # This clips the values to [-1, 1]
@@ -681,7 +654,7 @@ class InterpretableFA:
 
         # Calculate correlations
         model = self.models[model_name]
-        if self.orthogonal[model_name]:
+        if model.is_orthogonal_:
             variable_factor_correlations = model.loadings_
         else:
             variable_factor_correlations = model.loadings_ @ model.phi_
@@ -735,9 +708,9 @@ class InterpretableFA:
 
         Returns
         ----------
-        multiset: list
+        multiset: list or `None`
             The multiset, a list of ordered pairs (tuples). The first values are prior similarities.
-            The second values are the corresponding loading similarities.
+            The second values are the corresponding loading similarities. If no prior was specified, it is `None`.
         """
 
         # Arg checks
@@ -749,10 +722,15 @@ class InterpretableFA:
         num_of_vars = self.data_.shape[1]
         multiset = []
         loading_similarity = self.calculate_loading_similarity(model_name)
-        prior = self.prior
+        prior = self.models[model_name].prior_
+        if prior is None:
+            return None
+        elif isinstance(prior, list):
+            prior = self.calculate_semantic_similarity(prior)
+
         for i in range(num_of_vars):
             for j in range(i):
-                if prior[i, j] is not None:
+                if not pd.isna(prior[i, j]):
                     multiset.append((prior[i, j], loading_similarity[i, j]))
 
         return multiset
@@ -768,8 +746,8 @@ class InterpretableFA:
 
         Returns
         ----------
-        tau: float
-            The tau component of the V-index for the specified model.
+        tau: float or `None`
+            The tau component of the V-index for the specified model. If no prior was specified, then `None`.
         """
 
         # Arg checks
@@ -778,6 +756,9 @@ class InterpretableFA:
 
         # Initialize values
         multiset = self.generate_multiset(model_name)
+        if multiset is None:
+            return None
+
         x = []
         y = []
         n = len(multiset)
@@ -801,8 +782,8 @@ class InterpretableFA:
 
         Returns
         ----------
-        theta: float
-            The theta component of the V-index for the specified model.
+        theta: float or `None`
+            The theta component of the V-index for the specified model. If no prior was specified, then `None`.
         """
 
         # Arg checks
@@ -811,6 +792,9 @@ class InterpretableFA:
 
         # Initialize values
         multiset = self.generate_multiset(model_name)
+        if multiset is None:
+            return None
+
         x = []
         y = []
         n = len(multiset)
@@ -839,8 +823,8 @@ class InterpretableFA:
 
         Returns
         ----------
-        v_index: float
-            The V-index for the specified model.
+        v_index: float or `None`
+            The V-index for the specified model. If no prior was specified, then `None`.
         """
 
         # Arg checks
@@ -850,6 +834,10 @@ class InterpretableFA:
         # Compute
         theta = self.calculate_theta(model_name)
         tau = self.calculate_tau(model_name)
+
+        if theta is None or tau is None:
+            return None
+
         v_index = math.sqrt(tau * theta)
 
         return v_index
@@ -868,7 +856,7 @@ class InterpretableFA:
         result: dict
             A dictionary containing the indices with the following keys:
                 1) `model`: str, the model name
-                2) `v_index`: float, the V-index
+                2) `v_index`: float or `None`, the V-index
                 3) `communalities`: :obj: `numpy.ndarray`, the communalities (the communality of the first variable is
                 the first element and so on)
                 4) `sphericity`: tuple, the test statistic (float) and the p-value (float), in that order, for
@@ -906,7 +894,81 @@ class InterpretableFA:
 
         return result
 
-    def fit_factor_model(self, model_name, n_factors=3, rotation="priorimax", is_global=False, num_starts=1,
+    def _check_prior(self, prior, rotation):
+        result = {
+            "pass": True,
+            "message": "Passed."
+        }
+
+        if prior is None:
+            if rotation == "priorimax":
+                result["pass"] = False
+                result["message"] = "a prior matrix is required for priorimax"
+            return result
+        elif isinstance(prior, np.ndarray):
+            if len(prior.shape) != 2:
+                result["pass"] = False
+                result["message"] = "the shape of the prior matrix must be 2"
+                return result
+
+            if prior.shape[0] != self.data_.shape[1] or prior.shape[1] != self.data_.shape[1]:
+                result["pass"] = False
+                result["message"] = ("the number of rows (or columns) of the prior matrix must match the number of "
+                                     "manifest variables (i.e., number of columns in the dataset)")
+                return result
+
+            for row in range(prior.shape[0]):
+                for col in range(row + 1):
+                    val = prior[row, col]
+
+                    if not pd.isna(val):
+                        try:
+                            val = float(val)
+                            prior[row, col] = val
+                        except ValueError:
+                            result["pass"] = False
+                            result["message"] = "all entries in the prior matrix must be either a float or None"
+
+                    if pd.isna(val):
+                        if pd.isna(prior[col, row]):
+                            continue
+                        else:
+                            result["pass"] = False
+                            result["message"] = "the prior matrix must be symmetric"
+                            break
+                    else:
+                        if pd.isna(prior[col, row]):
+                            result["pass"] = False
+                            result["message"] = "the prior matrix must be symmetric"
+                            break
+                        else:
+                            if not np.isclose(val, prior[col, row]):
+                                result["pass"] = False
+                                result["message"] = "the prior matrix must be symmetric"
+                                break
+                            else:
+                                prior[col, row] = val
+
+            return result
+        elif isinstance(prior, list):
+            if len(prior) != self.data_.shape[1]:
+                result["pass"] = False
+                result["message"] = ("the number of statements for the prior must match the number of columns in the "
+                                     "data")
+                return result
+
+            for statement in prior:
+                if not isinstance(statement, str):
+                    result["pass"] = False
+                    result["message"] = "the statements for the prior matrix must be strings"
+                    return result
+        else:
+            result["pass"] = False
+            result["message"] = "prior must be a 2D numpy array, a list of strings, or `None`"
+
+        return result
+
+    def fit_factor_model(self, model_name, n_factors=3, rotation="priorimax", prior=None, is_global=False, num_starts=1,
                          samp_points=500, max_time=300.0, method="minres", use_smc=True, bounds=(0.005, 1),
                          impute="median", svd_method="randomized", rotation_kwargs=None):
         """
@@ -936,6 +998,10 @@ class InterpretableFA:
             Defaults to '"priorimax"'. Note that if `rotation` is '"priorimax"', the model is fit without
             rotation first with `factor_analyzer.factor_analyzer.FactorAnalyzer`. Then, `loadings_` and
             `rotation_matrix_` are updated with the new matrices (and these are the only attributes that are updated).
+        prior: :obj: `numpy.ndarray`, list of str, or `None`,  optional
+            The prior matrix that will be used for priorimax. If an array is given, then the prior matrix is used as is.
+            If a list of strings are given, then the semantic similarity matrix will be used as the prior matrix.
+            If `None`, then no prior matrix is used. Required only for priorimax. Default is `None`.
         is_global: bool, optional
             If this is `True`, then the problem of finding the priorimax rotation will be treated as a global
             optimization problem. Otherwise, local optimization is used. Note that this is ignored if the priorimax
@@ -975,7 +1041,8 @@ class InterpretableFA:
         Returns
         ----------
         model: :obj: `factor_analyzer.factor_analyzer.FactorAnalyzer`
-            The model fitted.
+            The model fitted. Relevant attributes include `rotation_matrix_`, `loadings_`, `corr_`, `phi_`, and the
+            extended attributes `is_orthogonal_` and `prior_`.
         actual_rot: str or `None`
             The actual rotation method used. If `rotation` is not "priorimax", this will be the same as
             `rotation`. If `rotation` is "priorimax", this will be "priorimax" if the optimization routine found
@@ -986,27 +1053,34 @@ class InterpretableFA:
         # Arg checks
         if rotation not in POSSIBLE_ROTATIONS and rotation is not None:
             raise ValueError(f"rotation must be one of: {POSSIBLE_ROTATIONS}")
+
+        check_prior = self._check_prior(prior, rotation)
+        if not check_prior["pass"]:
+            raise ValueError(check_prior["message"])
+
         if not isinstance(is_global, bool):
             raise TypeError("is_global must be bool")
+
         try:
             num_starts = int(num_starts)
         except ValueError:
             raise TypeError("num_starts must be an int or coercible to int")
         if num_starts < 1:
             raise ValueError("num_starts must be at least 1")
+
         try:
             samp_points = int(samp_points)
         except ValueError:
             raise TypeError("samp_points must be an int or coercible to int")
         if samp_points < 1:
             raise ValueError("samp_points must be at least 1")
+
         try:
             max_time = float(max_time)
         except ValueError:
             raise TypeError("max_time must be a float or coercible to float")
 
         # Fit the factor model
-        self.orthogonal[model_name] = rotation is None or rotation in ORTHOGONAL_ROTATIONS
         priorimax_rotator = None
         if rotation == "priorimax":
             rotation = None
@@ -1015,6 +1089,8 @@ class InterpretableFA:
                             impute, svd_method, rotation_kwargs)
         fa.fit(self.data_)
         self.models[model_name] = fa
+        self.models[model_name].is_orthogonal_ = rotation is None or rotation in ORTHOGONAL_ROTATIONS
+        self.models[model_name].prior_ = prior
         if priorimax_rotator is not None:
             actual_rot = priorimax_rotator.rotate(self, model_name)
         else:
@@ -1120,7 +1196,6 @@ class InterpretableFA:
             raise KeyError(f"model not found, model_name must be one of {list(self.models.keys())}")
 
         del self.models[model_name]
-        del self.orthogonal[model_name]
 
     def select_factor_model(self, models="all"):
         """
@@ -1182,6 +1257,9 @@ class InterpretableFA:
 
         # Get prior and loading similarities
         multiset = self.generate_multiset(model_name)
+        if multiset is None:
+            return None
+
         x = [item[0] for item in multiset]
         y = [item[1] for item in multiset]
         df = pd.DataFrame({
@@ -1194,7 +1272,7 @@ class InterpretableFA:
         sns.regplot(data=df, x='Prior Information', y='Loading Similarity', lowess=True,
                     scatter_kws={'alpha': 0.5, 'edgecolor': 'w'}, line_kws={'color': 'red'})
         plt.title(title or f'Interpretability Plot with LOWESS Curve - Model: {model_name}')
-        plt.xlabel('Prior Similarity' if self.embeddings is None else 'Semantic Similarity')
+        plt.xlabel('Semantic Similarity' if isinstance(self.models[model_name].prior_, list) else 'Prior Similarity')
         plt.ylabel('Loading Similarity')
         plt.grid(True)
         plt.show()
