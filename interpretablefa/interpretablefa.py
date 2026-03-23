@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v6.0.1
+# interpretablefa v6.0.2
 # https://pypi.org/project/interpretablefa/
 
 import math
@@ -508,7 +508,7 @@ class InterpretableFA:
 
         number_of_factors = self.models[model_name].loadings_.shape[0]
         self.fit_factor_model("_for_communalities_only", number_of_factors, None)
-        communalities = self.models["_for_communalities_only"].get_communalities.tolist()
+        communalities = self.models["_for_communalities_only"].get_communalities().tolist()
         self.remove_factor_model("_for_communalities_only")
 
         return communalities
