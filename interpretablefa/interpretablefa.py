@@ -1,4 +1,4 @@
-# Copyright 2025-2026 Justin Philip Tuazon, Gia Mizrane Abubo
+# Copyright 2025 Justin Philip Tuazon, Gia Mizrane Abubo
 
 # This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
 # License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v6.0.0
+# interpretablefa v6.0.1
 # https://pypi.org/project/interpretablefa/
 
 import math
@@ -503,6 +503,16 @@ class InterpretableFA:
         np.fill_diagonal(pinv, -np.diag(pinv))
         return covariance_to_correlation(pinv)
 
+    def _get_communalities(self, model_name):
+        # This gets the communalities for the factor model
+
+        number_of_factors = self.models[model_name].loadings_.shape[0]
+        self.fit_factor_model("_for_communalities_only", number_of_factors, None)
+        communalities = self.models["_for_communalities_only"].get_communalities.tolist()
+        self.remove_factor_model("_for_communalities_only")
+
+        return communalities
+
     def _get_kmo(self):
         # This gets the KMO if data is a correlation matrix
         # Note that this is used when the data supplied is in the form of a correlation matrix
@@ -873,7 +883,7 @@ class InterpretableFA:
 
         # Compute
         v = self.calculate_v_index(model_name)
-        communalities = self.models[model_name].get_communalities().tolist()
+        communalities = self._get_communalities(model_name)
         sphericity = self.sphericity
         kmo = self.kmo
         result = {
@@ -1085,6 +1095,10 @@ class InterpretableFA:
         if rotation == "priorimax":
             rotation = None
             priorimax_rotator = PriorimaxRotator(is_global, num_starts, samp_points, max_time)
+        elif rotation == "equamax" and rotation_kwargs is None:
+            rotation_kwargs = {
+                "kappa": n_factors / (2 * self.data_.shape[1])
+            }
         fa = FactorAnalyzer(n_factors, rotation, method, use_smc, self.is_corr_matrix, bounds,
                             impute, svd_method, rotation_kwargs)
         fa.fit(self.data_)
@@ -1168,7 +1182,7 @@ class InterpretableFA:
         corr_mat = self.calculate_variable_factor_correlations(model_name)
         for i in range(corr_mat.shape[1]):
             analysis["factor_" + str(i + 1)] = corr_mat[:, i].tolist()
-        analysis["communality"] = model.get_communalities().tolist()
+        analysis["communality"] = self._get_communalities(model_name)
         analysis["kmo_msa"] = self.kmo[0].tolist()
         analysis = pd.DataFrame(analysis)
         if sorted_:
