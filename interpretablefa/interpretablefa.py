@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v6.0.2
+# interpretablefa v6.0.5
 # https://pypi.org/project/interpretablefa/
 
 import math
@@ -165,6 +165,7 @@ class PriorimaxRotator:
         num_of_vars = loadings.shape[0]
         correlations = loadings / ifa_obj._scaler
         prior = ifa_obj.models[model_name].prior_
+
         if prior is None:
             return None
         elif isinstance(prior, list):
@@ -907,14 +908,17 @@ class InterpretableFA:
     def _check_prior(self, prior, rotation):
         result = {
             "pass": True,
-            "message": "Passed."
+            "message": "Passed.",
+            "processed_prior": None
         }
+
+        prior = prior.copy() if prior is not None else None
 
         if prior is None:
             if rotation == "priorimax":
                 result["pass"] = False
                 result["message"] = "a prior matrix is required for priorimax"
-            return result
+                return result
         elif isinstance(prior, np.ndarray):
             if len(prior.shape) != 2:
                 result["pass"] = False
@@ -938,6 +942,7 @@ class InterpretableFA:
                         except ValueError:
                             result["pass"] = False
                             result["message"] = "all entries in the prior matrix must be either a float or None"
+                            return result
 
                     if pd.isna(val):
                         if pd.isna(prior[col, row]):
@@ -945,21 +950,19 @@ class InterpretableFA:
                         else:
                             result["pass"] = False
                             result["message"] = "the prior matrix must be symmetric"
-                            break
+                            return result
                     else:
                         if pd.isna(prior[col, row]):
                             result["pass"] = False
                             result["message"] = "the prior matrix must be symmetric"
-                            break
+                            return result
                         else:
                             if not np.isclose(val, prior[col, row]):
                                 result["pass"] = False
                                 result["message"] = "the prior matrix must be symmetric"
-                                break
+                                return result
                             else:
                                 prior[col, row] = val
-
-            return result
         elif isinstance(prior, list):
             if len(prior) != self.data_.shape[1]:
                 result["pass"] = False
@@ -975,6 +978,9 @@ class InterpretableFA:
         else:
             result["pass"] = False
             result["message"] = "prior must be a 2D numpy array, a list of strings, or `None`"
+            return result
+
+        result["processed_prior"] = prior
 
         return result
 
@@ -1067,6 +1073,8 @@ class InterpretableFA:
         check_prior = self._check_prior(prior, rotation)
         if not check_prior["pass"]:
             raise ValueError(check_prior["message"])
+        else:
+            prior = check_prior["processed_prior"]
 
         if not isinstance(is_global, bool):
             raise TypeError("is_global must be bool")
