@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v6.0.5
+# interpretablefa v6.0.6
 # https://pypi.org/project/interpretablefa/
 
 import math
@@ -507,7 +507,7 @@ class InterpretableFA:
     def _get_communalities(self, model_name):
         # This gets the communalities for the factor model
 
-        number_of_factors = self.models[model_name].loadings_.shape[0]
+        number_of_factors = self.models[model_name].loadings_.shape[1]
         self.fit_factor_model("_for_communalities_only", number_of_factors, None)
         communalities = self.models["_for_communalities_only"].get_communalities().tolist()
         self.remove_factor_model("_for_communalities_only")
@@ -1067,6 +1067,13 @@ class InterpretableFA:
         """
 
         # Arg checks
+        if not isinstance(model_name, str):
+            raise TypeError("model_name must be a string")
+        if model_name.strip() == "" or model_name == "":
+            raise ValueError("model_name must have at least one non-whitespace character")
+        if model_name == "_for_communalities_only":
+            raise ValueError('"_for_communalities_only" is a reserved model name')
+
         if rotation not in POSSIBLE_ROTATIONS and rotation is not None:
             raise ValueError(f"rotation must be one of: {POSSIBLE_ROTATIONS}")
 
