@@ -1,4 +1,4 @@
-# Copyright 2025 Justin Philip Tuazon, Gia Mizrane Abubo
+# Copyright 2025-2026 Justin Philip Tuazon, Gia Mizrane Abubo
 
 # This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
 # License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
@@ -10,7 +10,7 @@
 # You should have received a copy of the GNU General Public License along with this program.
 # If not, see <https://www.gnu.org/licenses/>.
 
-# interpretablefa v6.0.7
+# interpretablefa v6.0.9
 # https://pypi.org/project/interpretablefa/
 
 import math
@@ -934,6 +934,14 @@ class InterpretableFA:
             for row in range(prior.shape[0]):
                 for col in range(row + 1):
                     val = prior[row, col]
+
+                    if row == col:
+                        if abs(val - 1.0) > 0.001:
+                            result["pass"] = False
+                            result["message"] = f"diagonal entries must be equal to 1"
+                        else:
+                            prior[row, col] = 1.0
+                            continue
 
                     if not pd.isna(val):
                         try:
